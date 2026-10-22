@@ -1,6 +1,7 @@
 import express from "express";
+import { createErrorHandler, notFoundHandler } from "@notepad/shared";
+import { config } from "./config";
 import { isDatabaseHealthy } from "./database";
-import { errorHandler, notFoundHandler } from "./middleware/errorHandler";
 import { authRouter } from "./routes/auth.routes";
 
 export function createApp() {
@@ -20,7 +21,7 @@ export function createApp() {
     app.use("/auth", authRouter);
 
     app.use(notFoundHandler);
-    app.use(errorHandler);
+    app.use(createErrorHandler({ exposeDetails: config.nodeEnv !== "production" }));
 
     return app;
 }

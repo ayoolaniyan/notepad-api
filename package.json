@@ -1,0 +1,17 @@
+{
+  "name": "notepad-api",
+  "private": true,
+  "workspaces": [
+    "shared",
+    "services/*"
+  ],
+  "scripts": {
+    "build": "npm run build -w @notepad/shared && npm run build -w auth-service",
+    "typecheck": "npm run build -w @notepad/shared && npm run typecheck --workspaces --if-present",
+    "dev:auth": "npm run build -w @notepad/shared && concurrently -k -n shared,auth -c blue,green \"npm run dev -w @notepad/shared\" \"npm run dev -w auth-service\""
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1",
+    "typescript": "^6.0.3"
+  }
+}

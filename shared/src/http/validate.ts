@@ -1,6 +1,6 @@
 import { RequestHandler } from "express";
 import { ObjectSchema } from "joi";
-import { AppError } from "../errors";
+import { AppError } from "./errors";
 
 // Validates req.body against a Joi schema and replaces it with the sanitized value
 export function validateBody(schema: ObjectSchema): RequestHandler {

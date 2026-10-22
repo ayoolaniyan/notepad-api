@@ -1,6 +1,6 @@
 import { prisma } from "../database";
 import { config } from "../config";
-import { AppError } from "../errors";
+import { AppError } from "@notepad/shared";
 import { Prisma } from "../generated/prisma/client";
 import { burnPasswordCheck, hashPassword, verifyPassword } from "../utils/password";
 import { generateRefreshToken, hashRefreshToken, signAccessToken } from "../utils/tokens";
