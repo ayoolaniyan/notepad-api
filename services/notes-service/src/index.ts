@@ -6,6 +6,7 @@ import { createApp } from "./app";
 startServer(createApp(), {
     name: "notes-service",
     port: config.port,
+    host: config.host,
     nodeEnv: config.nodeEnv,
     onShutdown: () => prisma.$disconnect(),
 });

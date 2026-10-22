@@ -4,6 +4,7 @@ import { AppError } from "@notepad/shared";
 import { Prisma } from "../generated/prisma/client";
 import { burnPasswordCheck, hashPassword, verifyPassword } from "../utils/password";
 import { generateRefreshToken, hashRefreshToken, signAccessToken } from "../utils/tokens";
+import { assertLoginAllowed, clearLoginFailures, recordLoginFailure } from "../utils/loginThrottle";
 
 export interface PublicUser {
     id: string;
@@ -59,16 +60,21 @@ export async function register(email: string, password: string) {
 }
 
 export async function login(email: string, password: string) {
+    assertLoginAllowed(email);
+
     const user = await prisma.user.findUnique({ where: { email } });
 
     if (!user) {
         await burnPasswordCheck(password);
+        recordLoginFailure(email);
         throw new AppError(401, "Invalid email or password");
     }
     if (!(await verifyPassword(password, user.password))) {
+        recordLoginFailure(email);
         throw new AppError(401, "Invalid email or password");
     }
 
+    clearLoginFailures(email);
     const { password: _, ...publicUser } = user;
     return { user: publicUser, tokens: await issueTokens(user) };
 }

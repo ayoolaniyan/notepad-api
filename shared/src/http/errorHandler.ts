@@ -15,6 +15,7 @@ export const notFoundHandler: RequestHandler = (req, _res, next) => {
 export function createErrorHandler({ exposeDetails, log = console.error }: ErrorHandlerOptions): ErrorRequestHandler {
     return (err, _req, res, _next) => {
         if (err instanceof AppError) {
+            if (err.headers) res.set(err.headers);
             res.status(err.statusCode).json(fail(err.message, err.errors));
             return;
         }
