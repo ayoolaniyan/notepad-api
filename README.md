@@ -4,7 +4,7 @@ A note-taking backend built on a microservices architecture with **Node.js**, **
 
 Each service owns its own database and is deployed independently. Services trust each other through signed JWT access tokens issued by the auth service.
 
-> **Status:** early development. The **auth-service** and **notes-service** work end-to-end. The API gateway and user service are not built yet. See [Project status](#project-status) and [Roadmap](#roadmap).
+> **Status:** early development. The **API gateway**, **auth-service** and **notes-service** work end-to-end. The user service is not built yet. See [Project status](#project-status) and [Roadmap](#roadmap).
 
 ---
 
@@ -19,6 +19,7 @@ Each service owns its own database and is deployed independently. Services trust
 - [API reference](#api-reference)
 - [Authentication design](#authentication-design)
 - [Database schema](#database-schema)
+- [API gateway](#api-gateway)
 - [Shared package](#shared-package)
 - [Available scripts](#available-scripts)
 - [Roadmap](#roadmap)
@@ -29,24 +30,26 @@ Each service owns its own database and is deployed independently. Services trust
 ## Architecture
 
 ```
-                    ┌──────────────────────┐
-   Client ────────▶ │  API Gateway (planned)│  routing, rate limiting, CORS
-                    └──────────┬───────────┘
-              ┌────────────────┼─────────────────┐
-              ▼                ▼                 ▼
-     ┌────────────────┐ ┌──────────────┐ ┌────────────────┐
-     │  auth-service  │ │ user-service │ │ notes-service  │
-     │ ✅ port 3001    │ │  (planned)   │ │ ✅ port 3002    │
-     └───────┬────────┘ └──────┬───────┘ └───────┬────────┘
-             ▼                 ▼                 ▼
-       ┌──────────┐      ┌──────────┐      ┌──────────┐
-       │ Postgres │      │ Postgres │      │ Postgres │
-       │  (auth)  │      │  (user)  │      │ (notes)  │
-       └──────────┘      └──────────┘      └──────────┘
+                    ┌─────────────────────────┐
+   Client ────────▶ │ ✅ api-gateway  :3000    │  routing, rate limiting, CORS,
+   /api/v1/...      │   (only public entry)   │  security headers, request ids
+                    └────────────┬────────────┘
+              ┌──────────────────┼──────────────────┐
+              ▼                  ▼                  ▼
+     ┌────────────────┐   ┌──────────────┐   ┌────────────────┐
+     │  auth-service  │   │ user-service │   │ notes-service  │
+     │ ✅ :3001 (int.) │   │  (planned)   │   │ ✅ :3002 (int.) │
+     └───────┬────────┘   └──────┬───────┘   └───────┬────────┘
+             ▼                   ▼                   ▼
+       ┌──────────┐        ┌──────────┐        ┌──────────┐
+       │ Postgres │        │ Postgres │        │ Postgres │
+       │  (auth)  │        │  (user)  │        │ (notes)  │
+       └──────────┘        └──────────┘        └──────────┘
 ```
 
+- **One public entry point.** Clients only talk to the gateway. Services are internal and can be bound to private interfaces.
 - **Database per service.** No service reads another service's tables.
-- **Stateless auth between services.** The auth-service issues short-lived JWT access tokens. Other services verify them locally with the shared secret, so no call to the auth-service is needed per request.
+- **Stateless auth between services.** The auth-service issues short-lived JWT access tokens. Other services verify them locally with the shared secret, so no call to the auth-service is needed per request. The gateway doesn't verify tokens and never holds the secret.
 - **Shared package.** Common types, HTTP helpers and JWT verification live in [`@notepad/shared`](#shared-package), so every service handles errors and checks tokens the same way.
 
 ---
@@ -63,6 +66,7 @@ Each service owns its own database and is deployed independently. Services trust
 | Validation | Joi (request bodies and environment variables) |
 | Password hashing | Node.js built-in `crypto.scrypt` (no native dependencies) |
 | Tokens | `jsonwebtoken` (HS256) + opaque refresh tokens |
+| Gateway | `http-proxy-middleware` (streaming proxy), `express-rate-limit`, `helmet`, `cors`, `pino` / `pino-http` (JSON logs) |
 | Monorepo | npm workspaces (single root lockfile) |
 | Dev runner | `tsx watch` + `tsc --watch`, run together with `concurrently` |
 
@@ -84,6 +88,16 @@ notepad-api/
 │   │   └── auth/                    # verifyAccessToken, createRequireAuth, req.user typing
 │   └── tsconfig.json
 └── services/
+    ├── api-gateway/                 # ✅ Public entry point (no database)
+    │   ├── src/
+    │   │   ├── index.ts             # Server bootstrap
+    │   │   ├── app.ts               # Middleware order and route table
+    │   │   ├── config.ts            # Upstreams, CORS, trust proxy, rate limits (validated)
+    │   │   ├── proxy.ts             # Streaming proxy, path rewrite, timeouts, 502/504 handling
+    │   │   ├── health.ts            # Aggregated upstream health
+    │   │   └── middleware/          # requestId, logger, security (helmet/CORS/body size), rateLimits
+    │   ├── .env.example
+    │   └── tsconfig.json
     ├── auth-service/                # ✅ Registration, login, token lifecycle
     │   ├── prisma/
     │   │   ├── schema.prisma        # User, RefreshToken models
@@ -97,7 +111,7 @@ notepad-api/
     │   │   ├── validation.ts        # Joi request schemas
     │   │   ├── routes/              # auth.routes.ts
     │   │   ├── services/            # auth.service.ts (business logic)
-    │   │   ├── utils/               # password.ts (scrypt), tokens.ts (signing, refresh tokens)
+    │   │   ├── utils/               # password.ts (scrypt), tokens.ts (signing), loginThrottle.ts (per-account lockout)
     │   │   └── generated/prisma/    # Generated Prisma client (gitignored)
     │   ├── .env.example
     │   ├── prisma.config.ts
@@ -144,6 +158,7 @@ notepad-api/
 - Atomic rotation: concurrent refreshes with the same token cannot both succeed
 - Unknown-email and wrong-password logins take the same time and return the same message, so registered emails can't be discovered
 - Email normalisation (trim and lowercase) and per-field validation errors
+- Per-account login lockout: 10 failed logins for one email in 15 minutes blocks that email from any IP, so credential stuffing spread across many IPs is stopped. Unknown emails lock out identically
 - Initial database migration
 
 **Shared package and monorepo**
@@ -166,15 +181,27 @@ notepad-api/
 - Cursor pagination never duplicates or skips untouched notes, even when notes are edited, deleted or created between pages
 - Validation: title 1–200 characters, content up to 100,000 characters, 1 MB body limit; `userId`, `id` and timestamps can't be set by clients
 
+**API gateway**
+- Routes `/api/v1/auth/*` and `/api/v1/notes/*` to the services; everything else is a `404` that never reaches a service
+- Streams request bodies (no parsing), rejects bodies over 1 MB early, and keeps query strings intact
+- `502` in the standard envelope when a service is down, `504` when it's slower than the timeout (10s)
+- Per-IP rate limits: global, login (failures only), register and refresh, with `RateLimit-*` and `Retry-After` headers
+- `trust proxy` setting so limits use the real client IP behind a load balancer and can't be dodged with a fake `X-Forwarded-For`
+- CORS allowlist, `helmet` security headers (HSTS in production only), `Cache-Control: no-store` on auth responses
+- `X-Request-Id` on every request, forwarded to the services; one JSON log line per request with no tokens or query strings
+- Aggregated `GET /health` (`503` naming any service that's down)
+- Services gained a `HOST` setting so they can be bound to internal interfaces only
+
 **Verified** end-to-end against a real PostgreSQL instance:
 - **auth-service** (30 scenarios): the happy paths, tampered/expired/`alg=none`/wrong-issuer tokens, refresh rotation and reuse, concurrent refresh races, logout, and expired refresh tokens
 - **notes-service** (51 scenarios), using real tokens from a running auth-service: cross-service token checks, CRUD and validation, ownership isolation between users (checked in the database), search and filters, and pagination under concurrent edits, deletes and creates
+- Both suites pass **directly and through the gateway** (162 runs, identical results)
+- **api-gateway** (62 scenarios, plus manual checks): routing and path rewriting, header forwarding, 413/502/504, every rate limit including bypass attempts (case, trailing slash, spoofed `X-Forwarded-For`), trust-proxy handling, CORS allow/deny, security headers, request ids, the per-account lockout from many IPs, and no secrets in logs
 
 *These checks have not yet been committed as an automated test suite (see roadmap).*
 
 ### 🚧 Not started
 - User service
-- API gateway
 - Automated tests, linting, Docker, CI
 
 ---
@@ -211,12 +238,13 @@ npm install
 ### 3. Configure the services
 
 ```bash
+cp services/api-gateway/.env.example services/api-gateway/.env
 cp services/auth-service/.env.example services/auth-service/.env
 cp services/notes-service/.env.example services/notes-service/.env
-openssl rand -base64 48   # use the output as JWT_ACCESS_SECRET in BOTH .env files
+openssl rand -base64 48   # use the output as JWT_ACCESS_SECRET in BOTH auth and notes .env files
 ```
 
-In each `.env`, set `DATABASE_URL` to that service's own database (`notepad_auth` or `notepad_notes`).
+In the auth and notes `.env` files, set `DATABASE_URL` to that service's own database (`notepad_auth` or `notepad_notes`). The gateway's defaults work locally as they are; set `CORS_ORIGINS` to your front-end's origin.
 
 > **`JWT_ACCESS_SECRET` and `JWT_ISSUER` must be identical in both services.** auth-service signs access tokens with them and notes-service verifies with them. If they differ, every notes request returns `401`.
 
@@ -228,29 +256,44 @@ In each `.env`, set `DATABASE_URL` to that service's own database (`notepad_auth
 npm run db:deploy -w auth-service    # applies migrations to notepad_auth
 npm run db:deploy -w notes-service   # applies migrations to notepad_notes
 npm run build                        # builds shared and generates both Prisma clients
-npm run dev                          # watches shared + auth (3001) + notes (3002)
+npm run dev                          # watches shared + gateway (3000) + auth (3001) + notes (3002)
 ```
 
-Both services restart on changes to their own code or to `shared/`. Use `npm run dev:auth` or `npm run dev:notes` to run just one.
+Everything restarts on changes to its own code or to `shared/`. Use `npm run dev:gateway`, `dev:auth` or `dev:notes` to run just one.
 
 ### 5. Check it works
 
 ```bash
-curl http://localhost:3001/health
-# {"success":true,"data":{"service":"auth-service","status":"ok","database":true}}
-curl http://localhost:3002/health
-# {"success":true,"data":{"service":"notes-service","status":"ok","database":true}}
+curl http://localhost:3000/health
+# {"success":true,"data":{"service":"api-gateway","status":"ok","upstreams":{"auth":"ok","notes":"ok"}}}
 
-# register, then create a note with the returned access token
-TOKEN=$(curl -s -X POST http://localhost:3001/auth/register -H "Content-Type: application/json" \
+# register, then create a note with the returned access token (all through the gateway)
+TOKEN=$(curl -s -X POST http://localhost:3000/api/v1/auth/register -H "Content-Type: application/json" \
   -d '{"email":"ada@example.com","password":"Secure#Pass1"}' | node -pe 'JSON.parse(require("fs").readFileSync(0)).data.accessToken')
-curl -X POST http://localhost:3002/notes -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+curl -X POST http://localhost:3000/api/v1/notes -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"title":"My first note","content":"Hello"}'
 ```
 
 ---
 
 ## Configuration
+
+### api-gateway
+
+| Variable | Default | Description |
+|---|---|---|
+| `PORT` | `3000` | Public HTTP port |
+| `HOST` | all interfaces | Interface to bind |
+| `AUTH_SERVICE_URL` | `http://localhost:3001` | Internal address of auth-service |
+| `NOTES_SERVICE_URL` | `http://localhost:3002` | Internal address of notes-service |
+| `UPSTREAM_TIMEOUT_MS` | `10000` | After this, the gateway gives up on a service and returns `504` |
+| `CORS_ORIGINS` | `http://localhost:5173` | Comma-separated allowed front-end origins. `*` is rejected |
+| `TRUST_PROXY` | `0` | Number of load balancers in front of the gateway. `0` = clients connect directly. **Set this correctly**: too high lets clients fake their IP, too low puts every client behind one IP |
+| `MAX_BODY_BYTES` | `1048576` (1 MB) | Larger requests are rejected with `413` before reaching a service |
+| `RATE_LIMIT_<NAME>_MAX` / `_WINDOW_MS` | see [Rate limits](#rate-limits) | `NAME` is `GLOBAL`, `LOGIN`, `REGISTER` or `REFRESH` |
+| `NODE_ENV` | `development` | `production` turns on HSTS and hides error details |
+
+The gateway has no database and doesn't need the JWT secret.
 
 ### auth-service
 
@@ -263,6 +306,9 @@ curl -X POST http://localhost:3002/notes -H "Authorization: Bearer $TOKEN" -H "C
 | `ACCESS_TOKEN_TTL_SECONDS` | | `900` (15 min) | Access token lifetime. Minimum 60 |
 | `REFRESH_TOKEN_TTL_DAYS` | | `7` | Refresh token lifetime. Minimum 1 |
 | `JWT_ISSUER` | | `notepad-auth-service` | `iss` claim set on and required from access tokens |
+| `LOGIN_MAX_FAILURES` | | `10` | Failed logins allowed per email before it's locked out (from any IP) |
+| `LOGIN_LOCKOUT_WINDOW_MINUTES` | | `15` | Lockout window |
+| `HOST` | | all interfaces | Interface to bind. In production use `127.0.0.1` or a private address so only the gateway can reach it |
 
 ### notes-service
 
@@ -273,15 +319,21 @@ curl -X POST http://localhost:3002/notes -H "Authorization: Bearer $TOKEN" -H "C
 | `JWT_ISSUER` | | `notepad-auth-service` | **Must equal auth-service's value** |
 | `NODE_ENV` | | `development` | `development`, `test` or `production` |
 | `PORT` | | `3002` | HTTP port |
+| `HOST` | | all interfaces | Interface to bind (see auth-service) |
 
 ---
 
 ## API reference
 
-| Service | Base URL (local) |
+Clients use the gateway only:
+
+| Base URL (local) | Routes to |
 |---|---|
-| auth-service | `http://localhost:3001` |
-| notes-service | `http://localhost:3002` |
+| `http://localhost:3000/api/v1/auth/*` | auth-service `/auth/*` |
+| `http://localhost:3000/api/v1/notes/*` | notes-service `/notes/*` |
+| `http://localhost:3000/health` | the gateway's own aggregated health |
+
+Endpoint paths below (`/auth/...`, `/notes/...`) are relative to `http://localhost:3000/api/v1`. Every response carries an `X-Request-Id` header; quote it when reporting a problem. Any route can also return `429` (see [Rate limits](#rate-limits)), `502` if a service is down, or `504` if it timed out.
 
 ### Response format
 
@@ -295,13 +347,12 @@ All responses share one envelope:
 { "success": false, "error": "Human-readable message", "errors": { "field": ["..."] } }
 ```
 
-`errors` is only present on validation failures (`400`).
+`errors` is only present on validation failures (`400`). Gateway errors (`404`, `413`, `429`, `502`, `504`) use the same envelope.
 
 ### Auth service endpoints
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| `GET` | `/health` | — | Service and database health |
 | `POST` | `/auth/register` | — | Create an account |
 | `POST` | `/auth/login` | — | Log in with email and password |
 | `POST` | `/auth/refresh` | — | Exchange a refresh token for a new token pair |
@@ -313,7 +364,7 @@ All responses share one envelope:
 #### `POST /auth/register`
 
 ```bash
-curl -X POST http://localhost:3001/auth/register \
+curl -X POST http://localhost:3000/api/v1/auth/register \
   -H "Content-Type: application/json" \
   -d '{"email":"ada@example.com","password":"Secure#Pass1"}'
 ```
@@ -343,28 +394,28 @@ curl -X POST http://localhost:3001/auth/register \
 }
 ```
 
-**Errors:** `400` validation failed · `409` email already registered
+**Errors:** `400` validation failed · `409` email already registered · `429` more than 5 registrations per hour from this IP
 
 ---
 
 #### `POST /auth/login`
 
 ```bash
-curl -X POST http://localhost:3001/auth/login \
+curl -X POST http://localhost:3000/api/v1/auth/login \
   -H "Content-Type: application/json" \
   -d '{"email":"ada@example.com","password":"Secure#Pass1"}'
 ```
 
 **`200 OK`**: same `data` shape as register.
 
-**Errors:** `400` validation failed · `401` `Invalid email or password` (the same response for unknown email and wrong password)
+**Errors:** `400` validation failed · `401` `Invalid email or password` (the same response for unknown email and wrong password) · `429` too many failed logins from this IP (gateway) or for this account (auth-service, `Too many failed login attempts. Try again later.`). Both include `Retry-After`
 
 ---
 
 #### `POST /auth/refresh`
 
 ```bash
-curl -X POST http://localhost:3001/auth/refresh \
+curl -X POST http://localhost:3000/api/v1/auth/refresh \
   -H "Content-Type: application/json" \
   -d '{"refreshToken":"Xq3v…"}'
 ```
@@ -385,14 +436,14 @@ curl -X POST http://localhost:3001/auth/refresh \
 
 The submitted refresh token is **revoked**, so the client must store the new one.
 
-**Errors:** `400` missing token · `401` invalid, revoked or expired token
+**Errors:** `400` missing token · `401` invalid, revoked or expired token · `429` more than 30 refreshes per minute
 
 ---
 
 #### `POST /auth/logout`
 
 ```bash
-curl -X POST http://localhost:3001/auth/logout \
+curl -X POST http://localhost:3000/api/v1/auth/logout \
   -H "Content-Type: application/json" \
   -d '{"refreshToken":"Xq3v…"}'
 ```
@@ -406,7 +457,7 @@ Idempotent: unknown or already-revoked tokens also return `200`. The access toke
 #### `GET /auth/me`
 
 ```bash
-curl http://localhost:3001/auth/me \
+curl http://localhost:3000/api/v1/auth/me \
   -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIs…"
 ```
 
@@ -416,14 +467,18 @@ curl http://localhost:3001/auth/me \
 
 ---
 
-#### `GET /health`
+#### `GET /health` (gateway, `http://localhost:3000/health`)
+
+```json
+{ "success": true, "data": { "service": "api-gateway", "status": "ok", "upstreams": { "auth": "ok", "notes": "ok" } } }
+```
 
 | Status | Meaning |
 |---|---|
-| `200` | Service up, database reachable |
-| `503` | Service up, database unreachable or slower than 2 seconds |
+| `200` | Gateway up, and every service reports healthy |
+| `503` | At least one service is down or slower than 2 seconds; `upstreams` shows which |
 
-Both services expose `GET /health` with the same format.
+Not rate limited. Each service also has its own internal `GET /health` (database check) that the gateway uses.
 
 ---
 
@@ -459,7 +514,7 @@ Every `/notes` route requires `Authorization: Bearer <accessToken>` from the aut
 #### `POST /notes`
 
 ```bash
-curl -X POST http://localhost:3002/notes \
+curl -X POST http://localhost:3000/api/v1/notes \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"title":"Shopping list","content":"Milk, Eggs","isPinned":false}'
 ```
@@ -481,7 +536,7 @@ Any other fields (`userId`, `id`, `createdAt`, …) are ignored.
 #### `GET /notes`
 
 ```bash
-curl "http://localhost:3002/notes?limit=20&q=milk" -H "Authorization: Bearer $TOKEN"
+curl "http://localhost:3000/api/v1/notes?limit=20&q=milk" -H "Authorization: Bearer $TOKEN"
 ```
 
 | Query | Rules |
@@ -520,7 +575,7 @@ Sorted pinned first, then most recently updated.
 #### `PATCH /notes/:id`
 
 ```bash
-curl -X PATCH http://localhost:3002/notes/$NOTE_ID \
+curl -X PATCH http://localhost:3000/api/v1/notes/$NOTE_ID \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"isPinned":true}'
 ```
@@ -579,6 +634,11 @@ register / login
 | **Notes scoped by token, not input** (notes-service) | The owner always comes from the verified token's `sub`. Clients can't pass a `userId` |
 | **Single-statement ownership checks** (notes-service) | `UPDATE/DELETE … WHERE id = ? AND user_id = ?`, so there's no gap between checking ownership and writing |
 | **Uniform `404` for foreign notes** (notes-service) | Note ids can't be probed to learn whether they exist |
+| **Per-IP rate limits** (gateway) | Slows down password guessing, mass registration and floods; only failed logins count |
+| **Per-account login lockout** (auth-service) | Stops credential stuffing spread across many IPs, which per-IP limits can't |
+| **`trust proxy` set explicitly** (gateway) | Rate limits key on the real client IP and can't be dodged by faking `X-Forwarded-For` |
+| **Services internal-only** (`HOST`) | Nobody can skip the gateway's limits by calling a service directly |
+| **No JWT secret in the gateway** | One fewer place the signing secret can leak from |
 
 ---
 
@@ -620,6 +680,59 @@ index (user_id, is_pinned DESC, updated_at DESC, id DESC)   -- matches the list 
 
 ---
 
+## API gateway
+
+### Request pipeline
+
+```
+request → X-Request-Id → access log → security headers → CORS → /health?
+        → global rate limit → body size check → route rate limit → proxy → service
+```
+
+CORS comes before rate limiting, so preflights aren't counted and `429` responses still carry CORS headers a browser can read.
+
+### Rate limits
+
+Per client IP, per gateway instance:
+
+| Route | Default | Notes |
+|---|---|---|
+| Everything | 300 / minute | |
+| `POST /auth/login` | **5 failed attempts / 15 minutes** | Successful logins don't count. Once the limit is hit, every login from that IP is blocked until the window resets |
+| `POST /auth/register` | 5 / hour | |
+| `POST /auth/refresh` | 30 / minute | |
+| `GET /health` | not limited | |
+
+Responses include `RateLimit-Limit`, `RateLimit-Remaining`, `RateLimit-Reset` and `RateLimit-Policy` headers; a `429` also includes `Retry-After` (seconds). Route matching is case-insensitive and ignores a trailing slash, so `/auth/LOGIN` and `/auth/login/` are limited too.
+
+On top of this, auth-service locks out **an account** after 10 failed logins in 15 minutes, whatever IP they come from.
+
+### CORS
+
+- Only origins listed in `CORS_ORIGINS` get CORS headers. Others are not rejected by the gateway, but browsers block the response.
+- Allowed methods: `GET`, `POST`, `PATCH`, `DELETE`. Allowed headers: `Authorization`, `Content-Type`, `X-Request-Id`.
+- No credentials mode: tokens are sent in the `Authorization` header, not cookies.
+- Browser code can read `X-Request-Id`, `RateLimit-*` and `Retry-After`. Preflights are cached for 10 minutes.
+
+### Security headers
+
+| Header | Value |
+|---|---|
+| `Content-Security-Policy` | `default-src 'none'; frame-ancestors 'none'` |
+| `X-Content-Type-Options` | `nosniff` |
+| `Referrer-Policy` | `no-referrer` |
+| `Cross-Origin-Resource-Policy` | `same-site` |
+| `Strict-Transport-Security` | `max-age=15552000; includeSubDomains` (**production only**) |
+| `Cache-Control` | `no-store` on every `/auth/*` response |
+
+`X-Powered-By` is removed, including from service responses.
+
+### Logging
+
+One JSON line per request: method, path (no query string), status, duration, client address and request id. `Authorization` headers, cookies and bodies are never logged. Upstream failures are logged with the service name and request id.
+
+---
+
 ## Shared package
 
 `@notepad/shared` is consumed like any npm package. A service adds `"@notepad/shared": "*"` to its dependencies and runs `npm install` at the root.
@@ -643,11 +756,11 @@ app.use(createErrorHandler({ exposeDetails: process.env.NODE_ENV !== "production
 |---|---|
 | `ApiResponse`, `User`, `AuthUser`, `AccessTokenPayload` | Shared types |
 | `ok(data?, message?)` / `fail(error, errors?)` | Build the standard response envelope |
-| `AppError(status, message, errors?)` | Throw from anywhere; the error handler turns it into a JSON response |
+| `AppError(status, message, errors?, headers?)` | Throw from anywhere; the error handler turns it into a JSON response (with any extra headers, e.g. `Retry-After`) |
 | `notFoundHandler`, `createErrorHandler({ exposeDetails })` | JSON 404 and centralised error handling |
 | `validateBody(joiSchema)` / `validateQuery(joiSchema)` | Validate and sanitise `req.body` / `req.query`, with per-field errors |
 | `createHealthHandler({ service, checkDatabase, timeoutMs? })` | Standard `GET /health` handler: `503` if the check fails or takes longer than 2 seconds |
-| `startServer(app, { name, port, nodeEnv, onShutdown? })` | Listen, exit with an error if the port is taken, shut down gracefully on SIGINT/SIGTERM |
+| `startServer(app, { name, port, host?, nodeEnv, onShutdown? })` | Listen (optionally on one interface), exit with an error if the port is taken, shut down gracefully on SIGINT/SIGTERM |
 | `verifyAccessToken(token, { secret, issuer })` | Verify an access token (HS256 only) |
 | `createRequireAuth({ secret, issuer })` | Middleware that requires a Bearer token and sets `req.user` |
 
@@ -663,13 +776,14 @@ app.use(createErrorHandler({ exposeDetails: process.env.NODE_ENV !== "production
 |---|---|
 | `npm run build` | Build `shared`, then every service |
 | `npm run typecheck` | Build `shared`, then type-check every workspace |
-| `npm run dev` | Watch `shared`, auth-service and notes-service together, with live reload |
+| `npm run dev` | Watch `shared`, the gateway, auth-service and notes-service together, with live reload |
+| `npm run dev:gateway` | Watch `shared` and the gateway only |
 | `npm run dev:auth` | Watch `shared` and auth-service only |
 | `npm run dev:notes` | Watch `shared` and notes-service only |
 
 ### Inside each service (`services/auth-service`, `services/notes-service`)
 
-These also work from the root with `-w <service>`, e.g. `npm run db:migrate -w notes-service`.
+These also work from the root with `-w <service>`, e.g. `npm run db:migrate -w notes-service`. The gateway has `dev`, `build`, `start` and `typecheck` only (no database).
 
 | Script | Description |
 |---|---|
@@ -693,19 +807,22 @@ These also work from the root with `-w <service>`, e.g. `npm run db:migrate -w n
 | 3 | Initial database migration | ✅ Done |
 | 4 | Turn `shared/` into a proper package (npm workspaces, build, response helpers, shared JWT-verification middleware) | ✅ Done |
 | 5 | **Notes service**: own database, user-scoped CRUD, JWT-protected | ✅ Done |
-| 6 | API gateway: routing, **rate limiting** (especially login), CORS, security headers | ⏳ Next |
-| 7 | Tooling: ESLint + Prettier, Vitest/Jest + Supertest suite, `docker-compose.yml`, GitHub Actions CI | ⏳ |
+| 6 | API gateway: routing, **rate limiting** (especially login), CORS, security headers | ✅ Done |
+| 7 | Tooling: ESLint + Prettier, Vitest/Jest + Supertest suite, `docker-compose.yml`, GitHub Actions CI | ⏳ Next |
 | 8 | Documentation: OpenAPI spec, per-service READMEs | ⏳ |
 
 ---
 
 ## Known limitations
 
-- **No rate limiting yet.** Each login does about 0.3 seconds of deliberate hashing work, so floods of login attempts should be throttled at the gateway (roadmap item 6).
+- **Rate-limit and lockout counters live in memory.** They're per instance and reset on restart. Running several gateway or auth instances needs a shared store such as Redis (planned with `docker-compose`, roadmap item 7).
+- **The account lockout can be used to lock someone out.** Anyone who knows an email can fail 10 logins and block that account for 15 minutes. This is the usual trade-off against credential stuffing; CAPTCHA or emailed unlock links would soften it.
+- **No TLS yet.** Production needs HTTPS terminated in front of the gateway (a load balancer or nginx), with `TRUST_PROXY` set to match.
+- **The gateway's body-size check relies on `Content-Length`.** Chunked uploads skip it, but each service still enforces its own limit (auth 100 KB, notes 1 MB).
 - **Revoked and expired refresh tokens are never cleaned up.** A periodic cleanup job is needed.
 - **No "log out of all devices" or password-change endpoint yet.** The internal revoke-all logic already exists.
 - **Access tokens can't be revoked before they expire.** Logout revokes the refresh token only, and the access token stays valid for up to 15 minutes. This is the standard trade-off for stateless JWTs.
-- **Any service holding the JWT secret could also forge tokens.** HS256 uses one secret for signing and verifying, and notes-service has it. Switching to RS256 (auth signs with a private key, other services verify with the public key) is recommended before the gateway.
+- **Any service holding the JWT secret could also forge tokens.** HS256 uses one secret for signing and verifying, and notes-service has it. Switching to RS256 (auth signs with a private key, other services verify with the public key) is the recommended next security step.
 - **Concurrent edits to the same note: last write wins.** Two devices editing one note can overwrite each other. Optimistic locking (send the last seen `updatedAt`, get `409` on conflict) would prevent it.
 - **Notes outlive their owner.** There's no foreign key across databases, so if account deletion is added, the notes-service will need to be told (an event or cleanup job).
 - **Search uses `ILIKE`**, which scans a user's notes. That's fine at this scale, but Postgres full-text search or `pg_trgm` would be needed for large accounts.
