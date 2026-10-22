@@ -19,6 +19,7 @@ Each service owns its own database and is deployed independently. Services trust
 - [API reference](#api-reference)
 - [Authentication design](#authentication-design)
 - [Database schema](#database-schema)
+- [Shared package](#shared-package)
 - [Available scripts](#available-scripts)
 - [Roadmap](#roadmap)
 - [Known limitations](#known-limitations)
@@ -46,7 +47,7 @@ Each service owns its own database and is deployed independently. Services trust
 
 - **Database per service.** No service reads another service's tables.
 - **Stateless auth between services.** The auth-service issues short-lived JWT access tokens. Other services verify them locally with the shared secret, so no call to the auth-service is needed per request.
-- **Shared package.** Common types and response helpers live in `shared/`.
+- **Shared package.** Common types, HTTP helpers and JWT verification live in [`@notepad/shared`](#shared-package), so every service handles errors and checks tokens the same way.
 
 ---
 
@@ -62,7 +63,8 @@ Each service owns its own database and is deployed independently. Services trust
 | Validation | Joi (request bodies and environment variables) |
 | Password hashing | Node.js built-in `crypto.scrypt` (no native dependencies) |
 | Tokens | `jsonwebtoken` (HS256) + opaque refresh tokens |
-| Dev runner | `tsx watch` |
+| Monorepo | npm workspaces (single root lockfile) |
+| Dev runner | `tsx watch` + `tsc --watch`, run together with `concurrently` |
 
 ---
 
@@ -71,9 +73,16 @@ Each service owns its own database and is deployed independently. Services trust
 ```
 notepad-api/
 ├── README.md
-├── shared/                          # Shared types and helpers (to become a proper package)
-│   ├── types/index.ts               # User, ApiResponse<T>
-│   └── utils/index.ts               # createApiResponse()
+├── package.json                     # Workspace root: workspaces + build/dev scripts
+├── package-lock.json                # Single lockfile for all packages
+├── tsconfig.base.json               # Compiler options every package extends
+├── shared/                          # @notepad/shared, compiled to dist/
+│   ├── src/
+│   │   ├── index.ts                 # Public entry point
+│   │   ├── types/                   # User, ApiResponse, AuthUser, AccessTokenPayload
+│   │   ├── http/                    # AppError, ok/fail, error handlers, validateBody
+│   │   └── auth/                    # verifyAccessToken, createRequireAuth, req.user typing
+│   └── tsconfig.json
 └── services/
     ├── auth-service/                # ✅ Registration, login, token lifecycle
     │   ├── prisma/
@@ -84,18 +93,16 @@ notepad-api/
     │   │   ├── app.ts               # Express app, routes, error handling
     │   │   ├── config.ts            # Env var validation (fails fast)
     │   │   ├── database.ts          # Prisma client + DB health check
-    │   │   ├── errors.ts            # AppError (HTTP-aware error)
+    │   │   ├── middleware.ts        # requireAuth configured with this service's JWT settings
     │   │   ├── validation.ts        # Joi request schemas
     │   │   ├── routes/              # auth.routes.ts
     │   │   ├── services/            # auth.service.ts (business logic)
-    │   │   ├── middleware/          # validateBody, requireAuth, error handlers
-    │   │   ├── utils/               # password.ts (scrypt), tokens.ts (JWT/refresh)
-    │   │   ├── types/               # Express Request augmentation (req.user)
+    │   │   ├── utils/               # password.ts (scrypt), tokens.ts (signing, refresh tokens)
     │   │   └── generated/prisma/    # Generated Prisma client (gitignored)
     │   ├── .env.example
     │   ├── prisma.config.ts
     │   └── tsconfig.json
-    └── user-service/                # Placeholder, not started
+    └── …                            # notes-service and user-service will live here
 ```
 
 ---
@@ -123,13 +130,21 @@ notepad-api/
 - Email normalisation (trim and lowercase) and per-field validation errors
 - Initial database migration
 
+**Shared package and monorepo**
+- npm workspaces with a single root lockfile; `@notepad/shared` is linked into every service
+- `@notepad/shared` builds on its own to `dist/` with type declarations
+- Shared response helpers (`ok`, `fail`), `AppError`, error handlers and `validateBody`
+- Shared JWT verification (`verifyAccessToken`, `createRequireAuth`), pinned to HS256 and issuer. `req.user` is typed in every service that imports the package
+- The package reads no environment variables: services pass their settings in
+- One-command dev loop: edits in `shared/` rebuild and restart the service automatically
+- Refactor verified to be behaviour-preserving: the 19 responses checked were byte-for-byte identical before and after
+
 **Verified** end-to-end against a real PostgreSQL instance (30 scenarios). The checks covered the happy paths, tampered/expired/`alg=none`/wrong-issuer tokens, refresh rotation and reuse, concurrent refresh races, logout, and expired refresh tokens. *These checks have not yet been committed as an automated test suite (see roadmap).*
 
 ### 🚧 Not started
 - Notes service (the core product)
 - User service
 - API gateway
-- Shared package as a proper, importable workspace package
 - Automated tests, linting, Docker, CI
 
 ---
@@ -153,7 +168,15 @@ docker run -d --name notepad-auth-db \
   postgres:17-alpine
 ```
 
-### 2. Configure the auth-service
+### 2. Install dependencies
+
+From the **repository root** (installs every workspace and links `@notepad/shared`):
+
+```bash
+npm install
+```
+
+### 3. Configure the auth-service
 
 ```bash
 cd services/auth-service
@@ -168,15 +191,20 @@ openssl rand -base64 48   # paste the output into JWT_ACCESS_SECRET
 
 > `DATABASE_URL` must be a standard `postgres://` or `postgresql://` connection string. Prisma's `prisma+postgres://` URLs are not supported by the driver adapter.
 
-### 3. Install, migrate and run
+### 4. Migrate and run
 
 ```bash
-npm install
+# still in services/auth-service
 npm run db:migrate     # applies migrations and generates the Prisma client
-npm run dev            # starts on http://localhost:3001 with live reload
+
+# back at the repository root
+cd ../..
+npm run dev:auth       # builds shared, then watches shared + auth-service
 ```
 
-### 4. Check it works
+The service starts on http://localhost:3001 and restarts on changes to its own code or to `shared/`.
+
+### 5. Check it works
 
 ```bash
 curl http://localhost:3001/health
@@ -410,9 +438,50 @@ refresh_tokens
 
 ---
 
+## Shared package
+
+`@notepad/shared` is consumed like any npm package. A service adds `"@notepad/shared": "*"` to its dependencies and runs `npm install` at the root.
+
+```ts
+import express from "express";
+import { createErrorHandler, createRequireAuth, notFoundHandler, ok, validateBody } from "@notepad/shared";
+
+const requireAuth = createRequireAuth({ secret: process.env.JWT_ACCESS_SECRET!, issuer: "notepad-auth-service" });
+
+const app = express();
+app.use(express.json());
+app.get("/notes", requireAuth, (req, res) => {
+    res.json(ok({ owner: req.user!.id }));       // req.user is typed
+});
+app.use(notFoundHandler);
+app.use(createErrorHandler({ exposeDetails: process.env.NODE_ENV !== "production" }));
+```
+
+| Export | Purpose |
+|---|---|
+| `ApiResponse`, `User`, `AuthUser`, `AccessTokenPayload` | Shared types |
+| `ok(data?, message?)` / `fail(error, errors?)` | Build the standard response envelope |
+| `AppError(status, message, errors?)` | Throw from anywhere; the error handler turns it into a JSON response |
+| `notFoundHandler`, `createErrorHandler({ exposeDetails })` | JSON 404 and centralised error handling |
+| `validateBody(joiSchema)` | Validate and sanitise `req.body`, with per-field errors |
+| `verifyAccessToken(token, { secret, issuer })` | Verify an access token (HS256 only) |
+| `createRequireAuth({ secret, issuer })` | Middleware that requires a Bearer token and sets `req.user` |
+
+`express`, `joi` and `jsonwebtoken` are **peer dependencies**, so each service provides them. This keeps a single copy of Express, which the `req.user` typing depends on.
+
+---
+
 ## Available scripts
 
-Run these from `services/auth-service`:
+### Repository root
+
+| Script | Description |
+|---|---|
+| `npm run build` | Build `shared`, then every service |
+| `npm run typecheck` | Build `shared`, then type-check every workspace |
+| `npm run dev:auth` | Watch `shared` and auth-service together, with live reload |
+
+### `services/auth-service`
 
 | Script | Description |
 |---|---|
@@ -434,8 +503,8 @@ Run these from `services/auth-service`:
 | 1 | Make auth-service runnable (server, DB, health, errors, config) | ✅ Done |
 | 2 | Auth endpoints (register, login, refresh, logout, me) | ✅ Done |
 | 3 | Initial database migration | ✅ Done |
-| 4 | Turn `shared/` into a proper package (npm workspaces, build, response helpers, shared JWT-verification middleware) | ⏳ Next |
-| 5 | **Notes service**: own database, user-scoped CRUD, JWT-protected | ⏳ |
+| 4 | Turn `shared/` into a proper package (npm workspaces, build, response helpers, shared JWT-verification middleware) | ✅ Done |
+| 5 | **Notes service**: own database, user-scoped CRUD, JWT-protected | ⏳ Next |
 | 6 | API gateway: routing, **rate limiting** (especially login), CORS, security headers | ⏳ |
 | 7 | Tooling: ESLint + Prettier, Vitest/Jest + Supertest suite, `docker-compose.yml`, GitHub Actions CI | ⏳ |
 | 8 | Documentation: OpenAPI spec, per-service READMEs | ⏳ |
@@ -448,5 +517,4 @@ Run these from `services/auth-service`:
 - **Revoked and expired refresh tokens are never cleaned up.** A periodic cleanup job is needed.
 - **No "log out of all devices" or password-change endpoint yet.** The internal revoke-all logic already exists.
 - **Access tokens can't be revoked before they expire.** Logout revokes the refresh token only, and the access token stays valid for up to 15 minutes. This is the standard trade-off for stateless JWTs.
-- **`shared/` is not consumed by any service yet.** Its `User` type has a typo (`updateAt`) that will be fixed in roadmap item 4.
-- **`services/user-service/`** is an empty placeholder.
+- **`shared/` must be built before services compile.** The root `build`, `typecheck` and `dev:auth` scripts handle this. If you run a service script directly after a fresh clone, run `npm run build -w @notepad/shared` first.

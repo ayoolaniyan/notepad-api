@@ -1,31 +1,16 @@
 import { createHash, randomBytes } from "node:crypto";
 import jwt from "jsonwebtoken";
+import { ACCESS_TOKEN_ALGORITHM, AccessTokenPayload } from "@notepad/shared";
 import { config } from "../config";
 
-export interface AccessTokenPayload {
-    sub: string;
-    email: string;
-}
-
+// Verification lives in @notepad/shared so every service checks tokens the same way
 export function signAccessToken(payload: AccessTokenPayload): string {
     return jwt.sign({ email: payload.email }, config.jwt.accessSecret, {
-        algorithm: "HS256",
+        algorithm: ACCESS_TOKEN_ALGORITHM,
         subject: payload.sub,
         issuer: config.jwt.issuer,
         expiresIn: config.jwt.accessTtlSeconds,
     });
-}
-
-// Throws if the token is invalid, expired, or signed with a different algorithm/issuer
-export function verifyAccessToken(token: string): AccessTokenPayload {
-    const decoded = jwt.verify(token, config.jwt.accessSecret, {
-        algorithms: ["HS256"],
-        issuer: config.jwt.issuer,
-    });
-    if (typeof decoded === "string" || !decoded.sub || typeof decoded.email !== "string") {
-        throw new Error("Malformed access token payload");
-    }
-    return { sub: decoded.sub, email: decoded.email };
 }
 
 // Refresh tokens are opaque random strings; only their SHA-256 is stored

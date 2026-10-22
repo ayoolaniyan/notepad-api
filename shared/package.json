@@ -1,19 +1,37 @@
 {
-  "name": "shared",
-  "version": "1.0.0",
-  "main": "index.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "name": "@notepad/shared",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Shared types, HTTP helpers and JWT verification for notepad-api services",
   "type": "commonjs",
-  "description": "",
-  "dependencies": {
-    "express": "^5.2.1"
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch --preserveWatchOutput",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "express": "^5.0.0",
+    "joi": "^18.0.0",
+    "jsonwebtoken": "^9.0.0"
   },
   "devDependencies": {
-    "typescript": "^6.0.2"
+    "@types/express": "^5.0.6",
+    "@types/jsonwebtoken": "^9.0.10",
+    "@types/node": "^26.6.5",
+    "express": "^5.3.0",
+    "joi": "^18.1.2",
+    "jsonwebtoken": "^9.0.3",
+    "typescript": "^6.0.3"
   }
 }
