@@ -6,9 +6,11 @@
     "services/*"
   ],
   "scripts": {
-    "build": "npm run build -w @notepad/shared && npm run build -w auth-service",
+    "build": "npm run build -w @notepad/shared && npm run build -w auth-service -w notes-service",
     "typecheck": "npm run build -w @notepad/shared && npm run typecheck --workspaces --if-present",
-    "dev:auth": "npm run build -w @notepad/shared && concurrently -k -n shared,auth -c blue,green \"npm run dev -w @notepad/shared\" \"npm run dev -w auth-service\""
+    "dev:auth": "npm run build -w @notepad/shared && concurrently -k -n shared,auth -c blue,green \"npm run dev -w @notepad/shared\" \"npm run dev -w auth-service\"",
+    "dev:notes": "npm run build -w @notepad/shared && concurrently -k -n shared,notes -c blue,magenta \"npm run dev -w @notepad/shared\" \"npm run dev -w notes-service\"",
+    "dev": "npm run build -w @notepad/shared && concurrently -k -n shared,auth,notes -c blue,green,magenta \"npm run dev -w @notepad/shared\" \"npm run dev -w auth-service\" \"npm run dev -w notes-service\""
   },
   "devDependencies": {
     "concurrently": "^9.2.1",

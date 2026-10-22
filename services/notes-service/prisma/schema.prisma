@@ -1,0 +1,24 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Note {
+  id        String   @id @default(uuid())
+  // auth-service user id, taken from the access token's `sub` claim.
+  // No foreign key: users live in auth-service's database.
+  userId    String   @map("user_id")
+  title     String   @db.VarChar(200)
+  content   String   @default("")
+  isPinned  Boolean  @default(false) @map("is_pinned")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Matches the list query: a user's notes, pinned first, newest first
+  @@index([userId, isPinned(sort: Desc), updatedAt(sort: Desc), id(sort: Desc)])
+  @@map("notes")
+}
