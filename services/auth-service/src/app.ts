@@ -1,7 +1,7 @@
 import express from "express";
-import { createErrorHandler, notFoundHandler } from "@notepad/shared";
+import { createErrorHandler, createHealthHandler, notFoundHandler } from "@notepad/shared";
 import { config } from "./config";
-import { isDatabaseHealthy } from "./database";
+import { prisma } from "./database";
 import { authRouter } from "./routes/auth.routes";
 
 export function createApp() {
@@ -10,13 +10,7 @@ export function createApp() {
     app.disable("x-powered-by");
     app.use(express.json({ limit: "100kb" }));
 
-    app.get("/health", async (_req, res) => {
-        const database = await isDatabaseHealthy();
-        res.status(database ? 200 : 503).json({
-            success: database,
-            data: { service: "auth-service", status: database ? "ok" : "degraded", database },
-        });
-    });
+    app.get("/health", createHealthHandler({ service: "auth-service", checkDatabase: () => prisma.$queryRaw`SELECT 1` }));
 
     app.use("/auth", authRouter);
 
