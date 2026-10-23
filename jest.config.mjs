@@ -27,6 +27,10 @@ const service = (name, options) => ({
 
 /** @type {import("jest").Config} */
 export default {
+    // On a cold run (every CI job) the first test to load an app also pays for compiling its
+    // whole dependency graph, which can exceed Jest's 5s default. A global option: Jest
+    // ignores it inside projects.
+    testTimeout: 15_000,
     projects: [
         { ...base, displayName: "shared", rootDir: "shared", testMatch: ["<rootDir>/src/**/*.test.ts"] },
         service("api-gateway", {
