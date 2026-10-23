@@ -22,6 +22,7 @@ Each service owns its own database and is deployed independently. Services trust
 - [API gateway](#api-gateway)
 - [Shared package](#shared-package)
 - [Available scripts](#available-scripts)
+- [Testing](#testing)
 - [Roadmap](#roadmap)
 - [Known limitations](#known-limitations)
 
@@ -83,13 +84,15 @@ notepad-api/
 ├── eslint.config.mjs                # ESLint flat config (typescript-eslint, Prettier-compatible)
 ├── .prettierrc.json                 # Prettier options; .prettierignore excludes generated code and Markdown
 ├── .editorconfig                    # Editor defaults matching Prettier
+├── jest.config.mjs                  # One Jest project per package, plus integration projects
 ├── shared/                          # @notepad/shared, compiled to dist/
 │   ├── src/
 │   │   ├── index.ts                 # Public entry point
 │   │   ├── types/                   # User, ApiResponse, AuthUser, AccessTokenPayload
 │   │   ├── http/                    # AppError, ok/fail, error handlers, validation, health, startServer
 │   │   └── auth/                    # verifyAccessToken, createRequireAuth, req.user typing
-│   └── tsconfig.json
+│   ├── tsconfig.json                # Type-checking (source and tests)
+│   └── tsconfig.build.json          # Compiles src/ to dist/, excluding tests
 └── services/
     ├── api-gateway/                 # ✅ Public entry point (no database)
     │   ├── src/
@@ -99,8 +102,9 @@ notepad-api/
     │   │   ├── proxy.ts             # Streaming proxy, path rewrite, timeouts, 502/504 handling
     │   │   ├── health.ts            # Aggregated upstream health
     │   │   └── middleware/          # requestId, logger, security (helmet/CORS/body size), rateLimits
+    │   ├── test/                    # Gateway tests against fake upstream servers
     │   ├── .env.example
-    │   └── tsconfig.json
+    │   └── tsconfig.json            # Plus tsconfig.build.json, as in shared/
     ├── auth-service/                # ✅ Registration, login, token lifecycle
     │   ├── prisma/
     │   │   ├── schema.prisma        # User, RefreshToken models
@@ -116,6 +120,7 @@ notepad-api/
     │   │   ├── services/            # auth.service.ts (business logic)
     │   │   ├── utils/               # password.ts (scrypt), tokens.ts (signing), loginThrottle.ts (per-account lockout)
     │   │   └── generated/prisma/    # Generated Prisma client (gitignored)
+    │   ├── test/                    # Integration tests, env setup, test-database setup
     │   ├── .env.example
     │   ├── prisma.config.ts
     │   └── tsconfig.json
@@ -133,6 +138,7 @@ notepad-api/
         │   ├── routes/              # notes.routes.ts
         │   ├── services/            # notes.service.ts (ownership-scoped queries, cursor pagination)
         │   └── generated/prisma/    # Generated Prisma client (gitignored)
+        ├── test/                    # Integration tests, env setup, test-database setup
         ├── .env.example
         ├── prisma.config.ts
         └── tsconfig.json
@@ -201,11 +207,11 @@ notepad-api/
 - Both suites pass **directly and through the gateway** (162 runs, identical results)
 - **api-gateway** (62 scenarios, plus manual checks): routing and path rewriting, header forwarding, 413/502/504, every rate limit including bypass attempts (case, trailing slash, spoofed `X-Forwarded-For`), trust-proxy handling, CORS allow/deny, security headers, request ids, the per-account lockout from many IPs, and no secrets in logs
 
-*These checks have not yet been committed as an automated test suite (see roadmap).*
+*The core of these checks is now an automated Jest + Supertest suite (see [Testing](#testing)).*
 
 ### 🚧 Not started
 - User service
-- Automated tests, linting, Docker, CI
+- Docker, CI
 
 ---
 
@@ -787,6 +793,10 @@ app.use(createErrorHandler({ exposeDetails: process.env.NODE_ENV !== "production
 | `npm run lint:fix` | Lint and apply automatic fixes |
 | `npm run format` | Format all files with Prettier |
 | `npm run format:check` | Check formatting without writing (for CI) |
+| `npm test` | Run every test: unit and integration (needs PostgreSQL, see [Testing](#testing)) |
+| `npm run test:unit` | Unit and gateway tests only; no database or running services needed |
+| `npm run test:integration` | auth-service and notes-service against a real test database |
+| `npm run test:coverage` | Full suite with a coverage report and minimum thresholds |
 
 ESLint uses type information, so `shared` must be built and the Prisma clients generated (`npm run build` does both) before `npm run lint`. Otherwise imports from those packages resolve to `any` and the lint reports false errors. Markdown is excluded from Prettier so tables stay hand-formatted.
 
@@ -809,6 +819,36 @@ These also work from the root with `-w <service>`, e.g. `npm run db:migrate -w n
 
 ---
 
+## Testing
+
+Tests use **Jest** with **Supertest**, compiled by SWC (`npm run typecheck` checks test types). They call each service's `createApp()` directly, so no server needs to be running.
+
+| Jest project | What it covers | Needs |
+|---|---|---|
+| `shared` | Error handler, validation, health check, JWT verification and `requireAuth` | Nothing |
+| `api-gateway` | Routing and path rewriting, request ids, security headers, CORS, 413/502/504, health, every rate limit | Nothing (fake upstream servers on random ports) |
+| `auth-service` | Password hashing, tokens, per-account lockout, validation schemas | Nothing |
+| `notes-service` | Validation schemas | Nothing |
+| `auth-service:integration` | Register, login, lockout, refresh rotation and replay detection, logout, `/me` | PostgreSQL |
+| `notes-service:integration` | CRUD, ownership isolation, search, filters, cursor pagination | PostgreSQL |
+
+Run one project with `npx jest --selectProjects <name>`, or one file with `npx jest <path>`.
+
+**Integration test database.** Integration tests connect to `TEST_POSTGRES_URL` (default `postgresql://postgres:postgres@localhost:5432`, the container from [Getting started](#1-start-postgresql)). Before each run, Jest creates `notepad_auth_test` and `notepad_notes_test` if needed, applies migrations and empties them. Development databases are never touched; the setup refuses any database name that doesn't end in `_test`.
+
+```bash
+# Different server or credentials
+TEST_POSTGRES_URL=postgresql://user:pass@db-host:5432 npm run test:integration
+```
+
+**Test configuration.** Each service's `test/setup-env.ts` sets every environment variable its config reads, so a local `.env` never affects test results. Auth tests lower `LOGIN_MAX_FAILURES` to 3 to keep lockout tests fast.
+
+**Isolation.** Each test registers its own random user, so tests don't share rows and need no per-test cleanup. Gateway tests load a fresh copy of the app for each scenario, so rate-limit counters start at zero.
+
+**Before the first integration run** on a fresh clone, generate the Prisma clients (`npm run build` does this). The generated clients aren't committed.
+
+---
+
 ## Roadmap
 
 | # | Milestone | Status |
@@ -819,7 +859,7 @@ These also work from the root with `-w <service>`, e.g. `npm run db:migrate -w n
 | 4 | Turn `shared/` into a proper package (npm workspaces, build, response helpers, shared JWT-verification middleware) | ✅ Done |
 | 5 | **Notes service**: own database, user-scoped CRUD, JWT-protected | ✅ Done |
 | 6 | API gateway: routing, **rate limiting** (especially login), CORS, security headers | ✅ Done |
-| 7 | Tooling: ESLint + Prettier ✅, Jest + Supertest suite, `docker-compose.yml`, GitHub Actions CI | ⏳ Next |
+| 7 | Tooling: ESLint + Prettier ✅, Jest + Supertest suite ✅, `docker-compose.yml`, GitHub Actions CI | ⏳ Next |
 | 8 | Documentation: OpenAPI spec, per-service READMEs | ⏳ |
 
 ---
