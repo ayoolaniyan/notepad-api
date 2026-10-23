@@ -3,13 +3,20 @@ import Joi from "joi";
 export const TITLE_MAX = 200;
 export const CONTENT_MAX = 100_000;
 
-const title = Joi.string().trim().min(1).max(TITLE_MAX).messages({
-    "string.empty": "Title cannot be empty",
-    "string.max": `Title must be at most ${TITLE_MAX} characters`,
-});
-const content = Joi.string().allow("").max(CONTENT_MAX).messages({
-    "string.max": `Content must be at most ${CONTENT_MAX} characters`,
-});
+const title = Joi.string()
+    .trim()
+    .min(1)
+    .max(TITLE_MAX)
+    .messages({
+        "string.empty": "Title cannot be empty",
+        "string.max": `Title must be at most ${TITLE_MAX} characters`,
+    });
+const content = Joi.string()
+    .allow("")
+    .max(CONTENT_MAX)
+    .messages({
+        "string.max": `Content must be at most ${CONTENT_MAX} characters`,
+    });
 const isPinned = Joi.boolean().strict();
 
 export const createNoteSchema = Joi.object({
@@ -29,4 +36,6 @@ export const listNotesQuerySchema = Joi.object({
     pinned: Joi.boolean(),
 });
 
-export const noteIdSchema = Joi.string().guid({ version: ["uuidv4"] }).required();
+export const noteIdSchema = Joi.string()
+    .guid({ version: ["uuidv4"] })
+    .required();

@@ -4,7 +4,11 @@ import { config } from "../config";
 
 // Counters are in memory, so limits are per gateway instance.
 // Pass a shared store (e.g. rate-limit-redis) here once there are several instances.
-function createLimiter(name: string, { max, windowMs }: { max: number; windowMs: number }, extra: Partial<Options> = {}) {
+function createLimiter(
+    name: string,
+    { max, windowMs }: { max: number; windowMs: number },
+    extra: Partial<Options> = {},
+) {
     return rateLimit({
         windowMs,
         limit: max,

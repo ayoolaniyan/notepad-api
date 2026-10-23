@@ -10,7 +10,10 @@ export function createApp() {
     app.disable("x-powered-by");
     app.use(express.json({ limit: "100kb" }));
 
-    app.get("/health", createHealthHandler({ service: "auth-service", checkDatabase: () => prisma.$queryRaw`SELECT 1` }));
+    app.get(
+        "/health",
+        createHealthHandler({ service: "auth-service", checkDatabase: () => prisma.$queryRaw`SELECT 1` }),
+    );
 
     app.use("/auth", authRouter);
 

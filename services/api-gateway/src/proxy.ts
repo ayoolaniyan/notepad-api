@@ -36,7 +36,10 @@ export function createServiceProxy({ name, target, upstreamPrefix, responseHeade
             },
             error: (err, req, res) => {
                 const code = (err as NodeJS.ErrnoException).code;
-                logger.error({ err: { message: err.message, code }, upstream: name, reqId: req.headers["x-request-id"] }, "upstream error");
+                logger.error(
+                    { err: { message: err.message, code }, upstream: name, reqId: req.headers["x-request-id"] },
+                    "upstream error",
+                );
 
                 if (!(res instanceof ServerResponse)) {
                     res.destroy();
