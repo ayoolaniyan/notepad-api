@@ -27,9 +27,14 @@ export function startServer(app: Express, { name, port, host, nodeEnv, onShutdow
 
     const shutdown = (signal: string) => {
         console.log(`${signal} received, shutting down`);
-        server.close(async () => {
-            await onShutdown?.();
-            process.exit(0);
+        server.close(() => {
+            Promise.resolve(onShutdown?.()).then(
+                () => process.exit(0),
+                (err: unknown) => {
+                    console.error(`${name} shutdown failed:`, err);
+                    process.exit(1);
+                },
+            );
         });
         // Force exit if connections don't drain in time
         setTimeout(() => process.exit(1), forceExitAfterMs).unref();
