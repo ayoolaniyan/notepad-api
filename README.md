@@ -85,6 +85,11 @@ notepad-api/
 ├── .prettierrc.json                 # Prettier options; .prettierignore excludes generated code and Markdown
 ├── .editorconfig                    # Editor defaults matching Prettier
 ├── jest.config.mjs                  # One Jest project per package, plus integration projects
+├── Dockerfile                       # One image definition for every service (--build-arg SERVICE=...)
+├── docker-compose.yml               # Postgres, migration jobs, services and gateway
+├── .dockerignore
+├── .env.example                     # Settings for docker compose (JWT secret, host ports, CORS)
+├── docker/postgres/init.sql         # Creates one database per service on first start
 ├── shared/                          # @notepad/shared, compiled to dist/
 │   ├── src/
 │   │   ├── index.ts                 # Public entry point
@@ -211,20 +216,51 @@ notepad-api/
 
 ### 🚧 Not started
 - User service
-- Docker, CI
+- CI
 
 ---
 
 ## Getting started
 
-### Prerequisites
+There are two ways to run the stack: everything in Docker, or the services on your machine with only PostgreSQL in Docker (best for development).
+
+### Quick start: everything in Docker
+
+Needs Docker with Compose v2.
+
+```bash
+cp .env.example .env
+# set JWT_ACCESS_SECRET in .env, e.g. to the output of: openssl rand -base64 48
+docker compose up --build -d --wait
+curl http://localhost:3000/health
+```
+
+This starts PostgreSQL (creating `notepad_auth` and `notepad_notes` on first run), applies both services' migrations as one-off jobs, then starts auth-service, notes-service and the gateway once each dependency is healthy. Only the gateway is published (`GATEWAY_PORT`, default `3000`). auth-service and notes-service are reachable only inside the compose network. Postgres is also published on `127.0.0.1:${POSTGRES_PORT:-5432}` for local tools and the integration tests.
+
+| Command | Effect |
+|---|---|
+| `docker compose logs -f api-gateway` | Follow one service's logs |
+| `docker compose up --build -d --wait` | Rebuild and restart after code changes; new migrations run automatically |
+| `docker compose down` | Stop everything; data is kept in the `postgres-data` volume |
+| `docker compose down -v` | Stop and delete the database volume |
+
+Images come from the single root [`Dockerfile`](Dockerfile) (`--build-arg SERVICE=<name>`). It builds in a full install stage, then copies the compiled output into a runtime image with production dependencies only, running as the non-root `node` user. A `migrate` target holds the Prisma CLI for the migration jobs.
+
+### Prerequisites (local development)
 
 - Node.js **22+** and npm
 - A PostgreSQL database (local install or Docker)
 
 ### 1. Start PostgreSQL
 
-The quickest option is Docker:
+The quickest option is the compose file's Postgres service, which creates both databases on first start:
+
+```bash
+cp .env.example .env   # set JWT_ACCESS_SECRET; compose requires it even for one service
+docker compose up -d postgres
+```
+
+Or with plain Docker:
 
 ```bash
 docker run -d --name notepad-db \
@@ -859,15 +895,17 @@ TEST_POSTGRES_URL=postgresql://user:pass@db-host:5432 npm run test:integration
 | 4 | Turn `shared/` into a proper package (npm workspaces, build, response helpers, shared JWT-verification middleware) | ✅ Done |
 | 5 | **Notes service**: own database, user-scoped CRUD, JWT-protected | ✅ Done |
 | 6 | API gateway: routing, **rate limiting** (especially login), CORS, security headers | ✅ Done |
-| 7 | Tooling: ESLint + Prettier ✅, Jest + Supertest suite ✅, `docker-compose.yml`, GitHub Actions CI | ⏳ Next |
+| 7 | Tooling: ESLint + Prettier ✅, Jest + Supertest suite ✅, `docker-compose.yml` ✅, GitHub Actions CI | ⏳ Next |
 | 8 | Documentation: OpenAPI spec, per-service READMEs | ⏳ |
 
 ---
 
 ## Known limitations
 
-- **Rate-limit and lockout counters live in memory.** They're per instance and reset on restart. Running several gateway or auth instances needs a shared store such as Redis (planned with `docker-compose`, roadmap item 7).
+- **Rate-limit and lockout counters live in memory.** They're per instance and reset on restart. Running several gateway or auth instances needs a shared store such as Redis (planned as a follow-up: `rate-limit-redis` in the gateway and a Redis-backed lockout in auth-service).
 - **The account lockout can be used to lock someone out.** Anyone who knows an email can fail 10 logins and block that account for 15 minutes. This is the usual trade-off against credential stuffing; CAPTCHA or emailed unlock links would soften it.
+- **Docker Desktop hides client IPs.** On macOS and Windows, every request to the published gateway port appears to come from one internal address, so the per-IP rate limits are shared by all clients. Linux hosts keep real client IPs. Production should put the gateway behind a load balancer and set `TRUST_PROXY`.
+- **The compose file is for local use.** Postgres uses the default `postgres`/`postgres` credentials and the services share that one user. Production needs per-service database users and secrets from a secret manager.
 - **No TLS yet.** Production needs HTTPS terminated in front of the gateway (a load balancer or nginx), with `TRUST_PROXY` set to match.
 - **The gateway's body-size check relies on `Content-Length`.** Chunked uploads skip it, but each service still enforces its own limit (auth 100 KB, notes 1 MB).
 - **Revoked and expired refresh tokens are never cleaned up.** A periodic cleanup job is needed.

@@ -1,0 +1,12 @@
+# Only sources and manifests go into the build context; everything is rebuilt inside the image
+**/node_modules
+**/dist
+**/coverage
+**/src/generated
+**/.env
+**/.env.*
+!**/.env.example
+.git
+.github
+**/*.log
+**/.DS_Store
