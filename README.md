@@ -80,6 +80,9 @@ notepad-api/
 ├── package.json                     # Workspace root: workspaces + build/dev scripts
 ├── package-lock.json                # Single lockfile for all packages
 ├── tsconfig.base.json               # Compiler options every package extends
+├── eslint.config.mjs                # ESLint flat config (typescript-eslint, Prettier-compatible)
+├── .prettierrc.json                 # Prettier options; .prettierignore excludes generated code and Markdown
+├── .editorconfig                    # Editor defaults matching Prettier
 ├── shared/                          # @notepad/shared, compiled to dist/
 │   ├── src/
 │   │   ├── index.ts                 # Public entry point
@@ -780,6 +783,14 @@ app.use(createErrorHandler({ exposeDetails: process.env.NODE_ENV !== "production
 | `npm run dev:gateway` | Watch `shared` and the gateway only |
 | `npm run dev:auth` | Watch `shared` and auth-service only |
 | `npm run dev:notes` | Watch `shared` and notes-service only |
+| `npm run lint` | Lint every workspace with ESLint (type-aware rules) |
+| `npm run lint:fix` | Lint and apply automatic fixes |
+| `npm run format` | Format all files with Prettier |
+| `npm run format:check` | Check formatting without writing (for CI) |
+
+ESLint uses type information, so `shared` must be built and the Prisma clients generated (`npm run build` does both) before `npm run lint`. Otherwise imports from those packages resolve to `any` and the lint reports false errors. Markdown is excluded from Prettier so tables stay hand-formatted.
+
+To hide the one-off formatting commit from `git blame`, run once: `git config blame.ignoreRevsFile .git-blame-ignore-revs`. GitHub applies it automatically.
 
 ### Inside each service (`services/auth-service`, `services/notes-service`)
 
@@ -808,7 +819,7 @@ These also work from the root with `-w <service>`, e.g. `npm run db:migrate -w n
 | 4 | Turn `shared/` into a proper package (npm workspaces, build, response helpers, shared JWT-verification middleware) | ✅ Done |
 | 5 | **Notes service**: own database, user-scoped CRUD, JWT-protected | ✅ Done |
 | 6 | API gateway: routing, **rate limiting** (especially login), CORS, security headers | ✅ Done |
-| 7 | Tooling: ESLint + Prettier, Vitest/Jest + Supertest suite, `docker-compose.yml`, GitHub Actions CI | ⏳ Next |
+| 7 | Tooling: ESLint + Prettier ✅, Jest + Supertest suite, `docker-compose.yml`, GitHub Actions CI | ⏳ Next |
 | 8 | Documentation: OpenAPI spec, per-service READMEs | ⏳ |
 
 ---
