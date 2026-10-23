@@ -1,0 +1,126 @@
+# Full stack: PostgreSQL, migrations, auth-service, notes-service and the gateway.
+#   cp .env.example .env   # then set JWT_ACCESS_SECRET and POSTGRES_PASSWORD
+#   docker compose up --build
+# Only the gateway (and Postgres, for local tools and tests) is published on the host.
+
+# Compose interpolates extension fields too, so this stops every command when .env lacks
+# the database password (see .env.example). No custom message: secret scanners mistake the
+# message text for a hardcoded value, so every line that uses it is a plain ${...} reference.
+x-required-settings:
+  - ${POSTGRES_PASSWORD:?}
+
+x-service-build: &service-build
+  context: .
+  dockerfile: Dockerfile
+
+x-database-env: &database-env
+  NODE_ENV: production
+  JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?Set JWT_ACCESS_SECRET in .env (see .env.example)}
+  JWT_ISSUER: notepad-auth-service
+
+# Timing shared by the /health probes below (they use Node's fetch: the slim image has no curl)
+x-healthcheck: &healthcheck
+  interval: 10s
+  timeout: 3s
+  retries: 5
+  start_period: 10s
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  auth-migrate:
+    build: { <<: *service-build, target: migrate, args: { SERVICE: auth-service } }
+    environment:
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD}@postgres:5432/notepad_auth
+    depends_on:
+      postgres: { condition: service_healthy }
+    restart: "no"
+
+  notes-migrate:
+    build: { <<: *service-build, target: migrate, args: { SERVICE: notes-service } }
+    environment:
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD}@postgres:5432/notepad_notes
+    depends_on:
+      postgres: { condition: service_healthy }
+    restart: "no"
+
+  auth-service:
+    build: { <<: *service-build, target: runtime, args: { SERVICE: auth-service } }
+    environment:
+      <<: *database-env
+      PORT: 3001
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD}@postgres:5432/notepad_auth
+    depends_on:
+      auth-migrate: { condition: service_completed_successfully }
+    healthcheck:
+      <<: *healthcheck
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3001/health').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))",
+        ]
+    restart: unless-stopped
+
+  notes-service:
+    build: { <<: *service-build, target: runtime, args: { SERVICE: notes-service } }
+    environment:
+      <<: *database-env
+      PORT: 3002
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD}@postgres:5432/notepad_notes
+    depends_on:
+      notes-migrate: { condition: service_completed_successfully }
+    healthcheck:
+      <<: *healthcheck
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3002/health').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))",
+        ]
+    restart: unless-stopped
+
+  api-gateway:
+    build: { <<: *service-build, target: runtime, args: { SERVICE: api-gateway } }
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      AUTH_SERVICE_URL: http://auth-service:3001
+      NOTES_SERVICE_URL: http://notes-service:3002
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173}
+      # Clients connect straight to the published port; raise this behind a load balancer
+      TRUST_PROXY: 0
+    ports:
+      - "${GATEWAY_PORT:-3000}:3000"
+    depends_on:
+      auth-service: { condition: service_healthy }
+      notes-service: { condition: service_healthy }
+    healthcheck:
+      <<: *healthcheck
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000/health').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))",
+        ]
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
