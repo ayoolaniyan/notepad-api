@@ -11,7 +11,10 @@ export function createApp() {
     // Notes can be long (content is capped at 100k characters by validation)
     app.use(express.json({ limit: "1mb" }));
 
-    app.get("/health", createHealthHandler({ service: "notes-service", checkDatabase: () => prisma.$queryRaw`SELECT 1` }));
+    app.get(
+        "/health",
+        createHealthHandler({ service: "notes-service", checkDatabase: () => prisma.$queryRaw`SELECT 1` }),
+    );
 
     app.use("/notes", notesRouter);
 

@@ -14,7 +14,10 @@ export interface StartServerOptions {
 }
 
 // Starts listening and shuts down gracefully on SIGINT/SIGTERM
-export function startServer(app: Express, { name, port, host, nodeEnv, onShutdown, forceExitAfterMs = 10_000 }: StartServerOptions): Server {
+export function startServer(
+    app: Express,
+    { name, port, host, nodeEnv, onShutdown, forceExitAfterMs = 10_000 }: StartServerOptions,
+): Server {
     const onListening = (err?: Error) => {
         // Express 5 passes listen errors (e.g. EADDRINUSE) to this callback instead of throwing
         if (err) {
