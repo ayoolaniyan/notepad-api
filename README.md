@@ -1,5 +1,7 @@
 # Notepad API
 
+[![CI](https://github.com/ayoolaniyan/notepad-api/actions/workflows/ci.yml/badge.svg)](https://github.com/ayoolaniyan/notepad-api/actions/workflows/ci.yml)
+
 A note-taking backend built on a microservices architecture with **Node.js**, **TypeScript**, **Express** and **PostgreSQL**.
 
 Each service owns its own database and is deployed independently. Services trust each other through signed JWT access tokens issued by the auth service.
@@ -23,6 +25,7 @@ Each service owns its own database and is deployed independently. Services trust
 - [Shared package](#shared-package)
 - [Available scripts](#available-scripts)
 - [Testing](#testing)
+- [Continuous integration](#continuous-integration)
 - [Roadmap](#roadmap)
 - [Known limitations](#known-limitations)
 
@@ -84,6 +87,10 @@ notepad-api/
 ├── eslint.config.mjs                # ESLint flat config (typescript-eslint, Prettier-compatible)
 ├── .prettierrc.json                 # Prettier options; .prettierignore excludes generated code and Markdown
 ├── .editorconfig                    # Editor defaults matching Prettier
+├── .github/
+│   ├── workflows/ci.yml             # Checks, tests and Docker smoke test on every push and PR
+│   └── dependabot.yml               # Weekly dependency, action and base-image updates
+├── scripts/smoke-test.sh            # End-to-end check through the gateway (used by CI)
 ├── jest.config.mjs                  # One Jest project per package, plus integration projects
 ├── Dockerfile                       # One image definition for every service (--build-arg SERVICE=...)
 ├── docker-compose.yml               # Postgres, migration jobs, services and gateway
@@ -214,9 +221,14 @@ notepad-api/
 
 *The core of these checks is now an automated Jest + Supertest suite (see [Testing](#testing)).*
 
+**Tooling**
+- ESLint (type-aware) and Prettier, with `lint` and `format:check` scripts
+- Jest + Supertest suite: unit tests for every package, gateway tests against fake upstreams, and integration tests against a real database (138 tests, ~91% line coverage)
+- One multi-stage `Dockerfile` and a `docker-compose.yml` that runs the whole stack, migrations included
+- GitHub Actions CI: checks, tests, and a Docker build with an end-to-end smoke test; Dependabot updates
+
 ### 🚧 Not started
 - User service
-- CI
 
 ---
 
@@ -885,6 +897,24 @@ TEST_POSTGRES_URL=postgresql://user:pass@db-host:5432 npm run test:integration
 
 ---
 
+## Continuous integration
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on every pull request and on pushes to `main`. A newer push to the same branch cancels the older run. Three jobs run in parallel:
+
+| Job | Steps |
+|---|---|
+| **Format, lint and typecheck** | `npm ci`, `npm run build` (shared and Prisma clients), `format:check`, `lint`, `typecheck` |
+| **Tests** | Every Jest project with coverage thresholds, against a PostgreSQL 17 service container. The coverage report is uploaded as the `coverage` artifact |
+| **Docker images and smoke test** | Builds every image, starts the compose stack (migrations included) and runs [`scripts/smoke-test.sh`](scripts/smoke-test.sh) through the gateway. Service logs are printed if anything fails |
+
+Run the same smoke test locally against a running stack: `scripts/smoke-test.sh http://localhost:3000`.
+
+Dependabot opens weekly PRs for npm packages (minor and patch updates grouped), GitHub Actions and the Docker base image.
+
+To block merging when CI fails, add a branch protection rule (or ruleset) on `main` that requires the three CI checks.
+
+---
+
 ## Roadmap
 
 | # | Milestone | Status |
@@ -895,8 +925,8 @@ TEST_POSTGRES_URL=postgresql://user:pass@db-host:5432 npm run test:integration
 | 4 | Turn `shared/` into a proper package (npm workspaces, build, response helpers, shared JWT-verification middleware) | ✅ Done |
 | 5 | **Notes service**: own database, user-scoped CRUD, JWT-protected | ✅ Done |
 | 6 | API gateway: routing, **rate limiting** (especially login), CORS, security headers | ✅ Done |
-| 7 | Tooling: ESLint + Prettier ✅, Jest + Supertest suite ✅, `docker-compose.yml` ✅, GitHub Actions CI | ⏳ Next |
-| 8 | Documentation: OpenAPI spec, per-service READMEs | ⏳ |
+| 7 | Tooling: ESLint + Prettier, Jest + Supertest suite, `docker-compose.yml`, GitHub Actions CI | ✅ Done |
+| 8 | Documentation: OpenAPI spec, per-service READMEs | ⏳ Next |
 
 ---
 

@@ -1,0 +1,99 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+# A new push to the same branch or PR cancels the run it supersedes
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: 22
+  NPM_CONFIG_FUND: false
+  NPM_CONFIG_AUDIT: false
+
+jobs:
+  checks:
+    name: Format, lint and typecheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      # Lint and typecheck need shared's dist/ and the generated Prisma clients
+      - name: Build
+        run: npm run build
+      - run: npm run format:check
+      - run: npm run lint
+      - run: npm run typecheck
+
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      # Integration tests create and migrate their own *_test databases on this server
+      TEST_POSTGRES_URL: postgresql://postgres:postgres@localhost:5432
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - name: Generate Prisma clients
+        run: npm run db:generate -w auth-service -w notes-service
+      - name: Run tests with coverage
+        run: npm run test:coverage -- --ci
+      - name: Upload coverage report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage
+          path: coverage/
+          retention-days: 14
+
+  docker:
+    name: Docker images and smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - name: Write compose settings
+        run: |
+          {
+            echo "JWT_ACCESS_SECRET=$(openssl rand -base64 48)"
+            echo "GATEWAY_PORT=3000"
+          } > .env
+      - name: Build images and start the stack
+        run: docker compose up --build --detach --wait --wait-timeout 180
+      - name: Smoke test through the gateway
+        run: scripts/smoke-test.sh http://localhost:3000
+      - name: Show service logs
+        if: failure()
+        run: docker compose logs --no-color
+      - name: Stop the stack
+        if: always()
+        run: docker compose down --volumes
