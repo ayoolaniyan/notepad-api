@@ -15,8 +15,14 @@ export const accessLog = pinoHttp({
     genReqId: (req) => req.headers["x-request-id"] as string,
     serializers: {
         // Path only: query strings can carry user content such as note search terms
-        req: (req) => ({ id: req.id, method: req.method, path: req.url?.split("?")[0], remoteAddress: req.remoteAddress }),
+        req: (req) => ({
+            id: req.id,
+            method: req.method,
+            path: req.url?.split("?")[0],
+            remoteAddress: req.remoteAddress,
+        }),
         res: (res) => ({ statusCode: res.statusCode }),
     },
-    customLogLevel: (_req, res, err) => (err || res.statusCode >= 500 ? "error" : res.statusCode >= 400 ? "warn" : "info"),
+    customLogLevel: (_req, res, err) =>
+        err || res.statusCode >= 500 ? "error" : res.statusCode >= 400 ? "warn" : "info",
 });

@@ -1,0 +1,20 @@
+version: 2
+updates:
+  # Minor and patch updates arrive as one weekly PR; majors get their own
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      npm-minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly

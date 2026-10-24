@@ -10,7 +10,10 @@ export interface HealthCheckOptions {
 // GET /health handler: 200 when the database answers in time, 503 otherwise (never hangs)
 export function createHealthHandler({ service, checkDatabase, timeoutMs = 2000 }: HealthCheckOptions): RequestHandler {
     return async (_req, res) => {
-        const database = await withTimeout(checkDatabase(), timeoutMs).then(() => true, () => false);
+        const database = await withTimeout(checkDatabase(), timeoutMs).then(
+            () => true,
+            () => false,
+        );
         res.status(database ? 200 : 503).json({
             success: database,
             data: { service, status: database ? "ok" : "degraded", database },

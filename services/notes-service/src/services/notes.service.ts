@@ -30,11 +30,7 @@ export interface NoteChanges {
 const notFound = () => new AppError(404, "Note not found");
 
 // Sort order: pinned first, then most recently updated; id breaks ties so the order is total
-const orderBy: Prisma.NoteOrderByWithRelationInput[] = [
-    { isPinned: "desc" },
-    { updatedAt: "desc" },
-    { id: "desc" },
-];
+const orderBy: Prisma.NoteOrderByWithRelationInput[] = [{ isPinned: "desc" }, { updatedAt: "desc" }, { id: "desc" }];
 
 // Keyset cursor: the sort position of the last note on the previous page.
 // Unlike offsets, it doesn't shift when notes are added or edited between pages.
@@ -77,10 +73,7 @@ export async function listNotes(userId: string, { limit, cursor, q, pinned }: Li
     if (pinned !== undefined) where.push({ isPinned: pinned });
     if (q) {
         where.push({
-            OR: [
-                { title: { contains: q, mode: "insensitive" } },
-                { content: { contains: q, mode: "insensitive" } },
-            ],
+            OR: [{ title: { contains: q, mode: "insensitive" } }, { content: { contains: q, mode: "insensitive" } }],
         });
     }
     if (cursor) where.push(afterCursor(decodeCursor(cursor)));

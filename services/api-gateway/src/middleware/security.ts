@@ -24,7 +24,14 @@ export const corsPolicy = cors({
     origin: config.corsOrigins,
     methods: ["GET", "POST", "PATCH", "DELETE"],
     allowedHeaders: ["Authorization", "Content-Type", "X-Request-Id"],
-    exposedHeaders: ["X-Request-Id", "RateLimit-Limit", "RateLimit-Remaining", "RateLimit-Reset", "RateLimit-Policy", "Retry-After"],
+    exposedHeaders: [
+        "X-Request-Id",
+        "RateLimit-Limit",
+        "RateLimit-Remaining",
+        "RateLimit-Reset",
+        "RateLimit-Policy",
+        "Retry-After",
+    ],
     credentials: false,
     maxAge: 600,
 });

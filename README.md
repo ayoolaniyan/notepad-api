@@ -1,5 +1,7 @@
 # Notepad API
 
+[![CI](https://github.com/ayoolaniyan/notepad-api/actions/workflows/ci.yml/badge.svg)](https://github.com/ayoolaniyan/notepad-api/actions/workflows/ci.yml)
+
 A note-taking backend built on a microservices architecture with **Node.js**, **TypeScript**, **Express** and **PostgreSQL**.
 
 Each service owns its own database and is deployed independently. Services trust each other through signed JWT access tokens issued by the auth service.
@@ -22,6 +24,8 @@ Each service owns its own database and is deployed independently. Services trust
 - [API gateway](#api-gateway)
 - [Shared package](#shared-package)
 - [Available scripts](#available-scripts)
+- [Testing](#testing)
+- [Continuous integration](#continuous-integration)
 - [Roadmap](#roadmap)
 - [Known limitations](#known-limitations)
 
@@ -80,13 +84,27 @@ notepad-api/
 ├── package.json                     # Workspace root: workspaces + build/dev scripts
 ├── package-lock.json                # Single lockfile for all packages
 ├── tsconfig.base.json               # Compiler options every package extends
+├── eslint.config.mjs                # ESLint flat config (typescript-eslint, Prettier-compatible)
+├── .prettierrc.json                 # Prettier options; .prettierignore excludes generated code and Markdown
+├── .editorconfig                    # Editor defaults matching Prettier
+├── .github/
+│   ├── workflows/ci.yml             # Checks, tests and Docker smoke test on every push and PR
+│   └── dependabot.yml               # Weekly dependency, action and base-image updates
+├── scripts/smoke-test.sh            # End-to-end check through the gateway (used by CI)
+├── jest.config.mjs                  # One Jest project per package, plus integration projects
+├── Dockerfile                       # One image definition for every service (--build-arg SERVICE=...)
+├── docker-compose.yml               # Postgres, migration jobs, services and gateway
+├── .dockerignore
+├── .env.example                     # Settings for docker compose (JWT secret, host ports, CORS)
+├── docker/postgres/init.sql         # Creates one database per service on first start
 ├── shared/                          # @notepad/shared, compiled to dist/
 │   ├── src/
 │   │   ├── index.ts                 # Public entry point
 │   │   ├── types/                   # User, ApiResponse, AuthUser, AccessTokenPayload
 │   │   ├── http/                    # AppError, ok/fail, error handlers, validation, health, startServer
 │   │   └── auth/                    # verifyAccessToken, createRequireAuth, req.user typing
-│   └── tsconfig.json
+│   ├── tsconfig.json                # Type-checking (source and tests)
+│   └── tsconfig.build.json          # Compiles src/ to dist/, excluding tests
 └── services/
     ├── api-gateway/                 # ✅ Public entry point (no database)
     │   ├── src/
@@ -96,8 +114,9 @@ notepad-api/
     │   │   ├── proxy.ts             # Streaming proxy, path rewrite, timeouts, 502/504 handling
     │   │   ├── health.ts            # Aggregated upstream health
     │   │   └── middleware/          # requestId, logger, security (helmet/CORS/body size), rateLimits
+    │   ├── test/                    # Gateway tests against fake upstream servers
     │   ├── .env.example
-    │   └── tsconfig.json
+    │   └── tsconfig.json            # Plus tsconfig.build.json, as in shared/
     ├── auth-service/                # ✅ Registration, login, token lifecycle
     │   ├── prisma/
     │   │   ├── schema.prisma        # User, RefreshToken models
@@ -113,6 +132,7 @@ notepad-api/
     │   │   ├── services/            # auth.service.ts (business logic)
     │   │   ├── utils/               # password.ts (scrypt), tokens.ts (signing), loginThrottle.ts (per-account lockout)
     │   │   └── generated/prisma/    # Generated Prisma client (gitignored)
+    │   ├── test/                    # Integration tests, env setup, test-database setup
     │   ├── .env.example
     │   ├── prisma.config.ts
     │   └── tsconfig.json
@@ -130,6 +150,7 @@ notepad-api/
         │   ├── routes/              # notes.routes.ts
         │   ├── services/            # notes.service.ts (ownership-scoped queries, cursor pagination)
         │   └── generated/prisma/    # Generated Prisma client (gitignored)
+        ├── test/                    # Integration tests, env setup, test-database setup
         ├── .env.example
         ├── prisma.config.ts
         └── tsconfig.json
@@ -198,24 +219,62 @@ notepad-api/
 - Both suites pass **directly and through the gateway** (162 runs, identical results)
 - **api-gateway** (62 scenarios, plus manual checks): routing and path rewriting, header forwarding, 413/502/504, every rate limit including bypass attempts (case, trailing slash, spoofed `X-Forwarded-For`), trust-proxy handling, CORS allow/deny, security headers, request ids, the per-account lockout from many IPs, and no secrets in logs
 
-*These checks have not yet been committed as an automated test suite (see roadmap).*
+*The core of these checks is now an automated Jest + Supertest suite (see [Testing](#testing)).*
+
+**Tooling**
+- ESLint (type-aware) and Prettier, with `lint` and `format:check` scripts
+- Jest + Supertest suite: unit tests for every package, gateway tests against fake upstreams, and integration tests against a real database (138 tests, ~91% line coverage)
+- One multi-stage `Dockerfile` and a `docker-compose.yml` that runs the whole stack, migrations included
+- GitHub Actions CI: checks, tests, and a Docker build with an end-to-end smoke test; Dependabot updates
 
 ### 🚧 Not started
 - User service
-- Automated tests, linting, Docker, CI
 
 ---
 
 ## Getting started
 
-### Prerequisites
+There are two ways to run the stack: everything in Docker, or the services on your machine with only PostgreSQL in Docker (best for development).
+
+### Quick start: everything in Docker
+
+Needs Docker with Compose v2.
+
+```bash
+cp .env.example .env
+# in .env, set JWT_ACCESS_SECRET (openssl rand -base64 48) and POSTGRES_PASSWORD (openssl rand -hex 24)
+docker compose up --build -d --wait
+curl http://localhost:3000/health
+```
+
+This starts PostgreSQL (creating `notepad_auth` and `notepad_notes` on first run), applies both services' migrations as one-off jobs, then starts auth-service, notes-service and the gateway once each dependency is healthy. Only the gateway is published (`GATEWAY_PORT`, default `3000`). auth-service and notes-service are reachable only inside the compose network. Postgres is also published on `127.0.0.1:${POSTGRES_PORT:-5432}` for local tools and the integration tests.
+
+| Command | Effect |
+|---|---|
+| `docker compose logs -f api-gateway` | Follow one service's logs |
+| `docker compose up --build -d --wait` | Rebuild and restart after code changes; new migrations run automatically |
+| `docker compose down` | Stop everything; data is kept in the `postgres-data` volume |
+| `docker compose down -v` | Stop and delete the database volume |
+
+Images come from the single root [`Dockerfile`](Dockerfile) (`--build-arg SERVICE=<name>`). It builds in a full install stage, then copies the compiled output into a runtime image with production dependencies only, running as the non-root `node` user. A `migrate` target holds the Prisma CLI for the migration jobs.
+
+### Prerequisites (local development)
 
 - Node.js **22+** and npm
 - A PostgreSQL database (local install or Docker)
 
 ### 1. Start PostgreSQL
 
-The quickest option is Docker:
+The quickest option is the compose file's Postgres service, which creates both databases on first start:
+
+```bash
+cp .env.example .env   # set JWT_ACCESS_SECRET and POSTGRES_PASSWORD; compose requires both even for one service
+docker compose up -d postgres
+```
+
+Then use that password in each service's `DATABASE_URL`, e.g. `postgresql://postgres:<POSTGRES_PASSWORD>@localhost:5432/notepad_auth`.
+
+Or with plain Docker:
 
 ```bash
 docker run -d --name notepad-db \
@@ -780,6 +839,18 @@ app.use(createErrorHandler({ exposeDetails: process.env.NODE_ENV !== "production
 | `npm run dev:gateway` | Watch `shared` and the gateway only |
 | `npm run dev:auth` | Watch `shared` and auth-service only |
 | `npm run dev:notes` | Watch `shared` and notes-service only |
+| `npm run lint` | Lint every workspace with ESLint (type-aware rules) |
+| `npm run lint:fix` | Lint and apply automatic fixes |
+| `npm run format` | Format all files with Prettier |
+| `npm run format:check` | Check formatting without writing (for CI) |
+| `npm test` | Run every test: unit and integration (needs PostgreSQL, see [Testing](#testing)) |
+| `npm run test:unit` | Unit and gateway tests only; no database or running services needed |
+| `npm run test:integration` | auth-service and notes-service against a real test database |
+| `npm run test:coverage` | Full suite with a coverage report and minimum thresholds |
+
+ESLint uses type information, so `shared` must be built and the Prisma clients generated (`npm run build` does both) before `npm run lint`. Otherwise imports from those packages resolve to `any` and the lint reports false errors. Markdown is excluded from Prettier so tables stay hand-formatted.
+
+To hide the one-off formatting commit from `git blame`, run once: `git config blame.ignoreRevsFile .git-blame-ignore-revs`. GitHub applies it automatically.
 
 ### Inside each service (`services/auth-service`, `services/notes-service`)
 
@@ -798,6 +869,57 @@ These also work from the root with `-w <service>`, e.g. `npm run db:migrate -w n
 
 ---
 
+## Testing
+
+Tests use **Jest** with **Supertest**, compiled by SWC (`npm run typecheck` checks test types). They call each service's `createApp()` directly, so no server needs to be running.
+
+| Jest project | What it covers | Needs |
+|---|---|---|
+| `shared` | Error handler, validation, health check, JWT verification and `requireAuth` | Nothing |
+| `api-gateway` | Routing and path rewriting, request ids, security headers, CORS, 413/502/504, health, every rate limit | Nothing (fake upstream servers on random ports) |
+| `auth-service` | Password hashing, tokens, per-account lockout, validation schemas | Nothing |
+| `notes-service` | Validation schemas | Nothing |
+| `auth-service:integration` | Register, login, lockout, refresh rotation and replay detection, logout, `/me` | PostgreSQL |
+| `notes-service:integration` | CRUD, ownership isolation, search, filters, cursor pagination | PostgreSQL |
+
+Run one project with `npx jest --selectProjects <name>`, or one file with `npx jest <path>`.
+
+**Integration test database.** Integration tests connect to `TEST_POSTGRES_URL` (default `postgresql://postgres:postgres@localhost:5432`, which matches the plain `docker run` container from [Getting started](#1-start-postgresql)). Before each run, Jest creates `notepad_auth_test` and `notepad_notes_test` if needed, applies migrations and empties them. Development databases are never touched; the setup refuses any database name that doesn't end in `_test`.
+
+```bash
+# The compose Postgres (docker compose up -d postgres), using POSTGRES_PASSWORD from .env
+TEST_POSTGRES_URL=postgresql://postgres:<POSTGRES_PASSWORD>@localhost:5432 npm test
+
+# Any other server or credentials
+TEST_POSTGRES_URL=postgresql://user:pass@db-host:5432 npm run test:integration
+```
+
+**Test configuration.** Each service's `test/setup-env.ts` sets every environment variable its config reads, so a local `.env` never affects test results. Auth tests lower `LOGIN_MAX_FAILURES` to 3 to keep lockout tests fast.
+
+**Isolation.** Each test registers its own random user, so tests don't share rows and need no per-test cleanup. Gateway tests load a fresh copy of the app for each scenario, so rate-limit counters start at zero.
+
+**Before the first integration run** on a fresh clone, generate the Prisma clients (`npm run build` does this). The generated clients aren't committed.
+
+---
+
+## Continuous integration
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on every pull request and on pushes to `main`. A newer push to the same branch cancels the older run. Three jobs run in parallel:
+
+| Job | Steps |
+|---|---|
+| **Format, lint and typecheck** | `npm ci`, `npm run build` (shared and Prisma clients), `format:check`, `lint`, `typecheck` |
+| **Tests** | Every Jest project with coverage thresholds, against a PostgreSQL 17 service container. The coverage report is uploaded as the `coverage` artifact |
+| **Docker images and smoke test** | Builds every image, starts the compose stack (migrations included) and runs [`scripts/smoke-test.sh`](scripts/smoke-test.sh) through the gateway. Service logs are printed if anything fails |
+
+Run the same smoke test locally against a running stack: `scripts/smoke-test.sh http://localhost:3000`.
+
+Dependabot opens weekly PRs for npm packages (minor and patch updates grouped), GitHub Actions and the Docker base image.
+
+To block merging when CI fails, add a branch protection rule (or ruleset) on `main` that requires the three CI checks.
+
+---
+
 ## Roadmap
 
 | # | Milestone | Status |
@@ -808,15 +930,17 @@ These also work from the root with `-w <service>`, e.g. `npm run db:migrate -w n
 | 4 | Turn `shared/` into a proper package (npm workspaces, build, response helpers, shared JWT-verification middleware) | ✅ Done |
 | 5 | **Notes service**: own database, user-scoped CRUD, JWT-protected | ✅ Done |
 | 6 | API gateway: routing, **rate limiting** (especially login), CORS, security headers | ✅ Done |
-| 7 | Tooling: ESLint + Prettier, Vitest/Jest + Supertest suite, `docker-compose.yml`, GitHub Actions CI | ⏳ Next |
-| 8 | Documentation: OpenAPI spec, per-service READMEs | ⏳ |
+| 7 | Tooling: ESLint + Prettier, Jest + Supertest suite, `docker-compose.yml`, GitHub Actions CI | ✅ Done |
+| 8 | Documentation: OpenAPI spec, per-service READMEs | ⏳ Next |
 
 ---
 
 ## Known limitations
 
-- **Rate-limit and lockout counters live in memory.** They're per instance and reset on restart. Running several gateway or auth instances needs a shared store such as Redis (planned with `docker-compose`, roadmap item 7).
+- **Rate-limit and lockout counters live in memory.** They're per instance and reset on restart. Running several gateway or auth instances needs a shared store such as Redis (planned as a follow-up: `rate-limit-redis` in the gateway and a Redis-backed lockout in auth-service).
 - **The account lockout can be used to lock someone out.** Anyone who knows an email can fail 10 logins and block that account for 15 minutes. This is the usual trade-off against credential stuffing; CAPTCHA or emailed unlock links would soften it.
+- **Docker Desktop hides client IPs.** On macOS and Windows, every request to the published gateway port appears to come from one internal address, so the per-IP rate limits are shared by all clients. Linux hosts keep real client IPs. Production should put the gateway behind a load balancer and set `TRUST_PROXY`.
+- **The compose file is for local use.** Every service connects as the `postgres` superuser, with the password from `.env`. Production needs per-service database users and secrets from a secret manager.
 - **No TLS yet.** Production needs HTTPS terminated in front of the gateway (a load balancer or nginx), with `TRUST_PROXY` set to match.
 - **The gateway's body-size check relies on `Content-Length`.** Chunked uploads skip it, but each service still enforces its own limit (auth 100 KB, notes 1 MB).
 - **Revoked and expired refresh tokens are never cleaned up.** A periodic cleanup job is needed.

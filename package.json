@@ -11,10 +11,30 @@
     "dev:auth": "npm run build -w @notepad/shared && concurrently -k -n shared,auth -c blue,green \"npm run dev -w @notepad/shared\" \"npm run dev -w auth-service\"",
     "dev:notes": "npm run build -w @notepad/shared && concurrently -k -n shared,notes -c blue,magenta \"npm run dev -w @notepad/shared\" \"npm run dev -w notes-service\"",
     "dev": "npm run build -w @notepad/shared && concurrently -k -n shared,auth,notes,gateway -c blue,green,magenta,yellow \"npm run dev -w @notepad/shared\" \"npm run dev -w auth-service\" \"npm run dev -w notes-service\" \"npm run dev -w api-gateway\"",
-    "dev:gateway": "npm run build -w @notepad/shared && concurrently -k -n shared,gateway -c blue,yellow \"npm run dev -w @notepad/shared\" \"npm run dev -w api-gateway\""
+    "dev:gateway": "npm run build -w @notepad/shared && concurrently -k -n shared,gateway -c blue,yellow \"npm run dev -w @notepad/shared\" \"npm run dev -w api-gateway\"",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "jest",
+    "test:unit": "jest --selectProjects shared api-gateway auth-service notes-service",
+    "test:integration": "jest --selectProjects auth-service:integration notes-service:integration",
+    "test:coverage": "jest --coverage"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@jest/globals": "^30.5.2",
+    "@swc/core": "^1.16.20",
+    "@swc/jest": "^0.2.39",
+    "@types/supertest": "^7.2.1",
     "concurrently": "^9.2.1",
-    "typescript": "^6.0.3"
+    "eslint": "^10.13.0",
+    "eslint-config-prettier": "^10.1.8",
+    "globals": "^17.13.0",
+    "jest": "^30.5.2",
+    "prettier": "^3.9.10",
+    "supertest": "^7.3.1",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.72.0"
   }
 }

@@ -39,13 +39,22 @@ const envSchema = Joi.object({
     UPSTREAM_TIMEOUT_MS: Joi.number().integer().min(100).default(10_000),
     CORS_ORIGINS: Joi.string().default("http://localhost:5173"),
     TRUST_PROXY: Joi.number().integer().min(0).default(0),
-    MAX_BODY_BYTES: Joi.number().integer().min(1024).default(1024 * 1024),
+    MAX_BODY_BYTES: Joi.number()
+        .integer()
+        .min(1024)
+        .default(1024 * 1024),
     RATE_LIMIT_GLOBAL_MAX: Joi.number().integer().min(1).default(300),
     RATE_LIMIT_GLOBAL_WINDOW_MS: Joi.number().integer().min(1000).default(MINUTE),
     RATE_LIMIT_LOGIN_MAX: Joi.number().integer().min(1).default(5),
-    RATE_LIMIT_LOGIN_WINDOW_MS: Joi.number().integer().min(1000).default(15 * MINUTE),
+    RATE_LIMIT_LOGIN_WINDOW_MS: Joi.number()
+        .integer()
+        .min(1000)
+        .default(15 * MINUTE),
     RATE_LIMIT_REGISTER_MAX: Joi.number().integer().min(1).default(5),
-    RATE_LIMIT_REGISTER_WINDOW_MS: Joi.number().integer().min(1000).default(60 * MINUTE),
+    RATE_LIMIT_REGISTER_WINDOW_MS: Joi.number()
+        .integer()
+        .min(1000)
+        .default(60 * MINUTE),
     RATE_LIMIT_REFRESH_MAX: Joi.number().integer().min(1).default(30),
     RATE_LIMIT_REFRESH_WINDOW_MS: Joi.number().integer().min(1000).default(MINUTE),
 }).unknown(true);
@@ -67,7 +76,9 @@ const corsOrigins = (value.CORS_ORIGINS as string)
 
 const invalidOrigin = corsOrigins.find((origin) => origin === "*" || Joi.string().uri().validate(origin).error);
 if (invalidOrigin) {
-    console.error(`Invalid environment configuration:\n  - CORS_ORIGINS contains "${invalidOrigin}"; list full origins like https://app.example.com (no "*")`);
+    console.error(
+        `Invalid environment configuration:\n  - CORS_ORIGINS contains "${invalidOrigin}"; list full origins like https://app.example.com (no "*")`,
+    );
     process.exit(1);
 }
 
