@@ -1,0 +1,8 @@
+extends:
+  - recommended
+
+rules:
+  # The spec documents the local gateway; deployments set their own server URL
+  no-server-example.com: off
+  # GET /health only ever answers 200 or 503
+  operation-4xx-response: off

@@ -1,0 +1,690 @@
+openapi: 3.1.0
+info:
+  title: Notepad API
+  version: 1.0.0
+  summary: Note-taking backend behind a single API gateway.
+  description: |
+    Clients only talk to the **api-gateway**. It routes `/api/v1/auth/*` to auth-service and
+    `/api/v1/notes/*` to notes-service; every other path is a `404` from the gateway itself.
+
+    **Response envelope.** Every response, including gateway errors, uses one JSON shape:
+    `{ "success": true, "data": …, "message": … }` on success and
+    `{ "success": false, "error": "…", "errors": { "field": ["…"] } }` on failure.
+    `errors` is only present on validation failures (`400`).
+
+    **Request ids.** Every response carries `X-Request-Id`. Send your own (8–128 characters of
+    `A-Z a-z 0-9 . _ -`) to correlate logs; anything else is replaced with a new UUID.
+
+    **Rate limits.** Per client IP, per gateway instance. Any `/api/v1` route can return `429`.
+    Responses carry `RateLimit-Limit`, `RateLimit-Remaining`, `RateLimit-Reset` and `RateLimit-Policy`;
+    a `429` also carries `Retry-After`.
+
+    **Gateway errors.** Any `/api/v1` route can also return `413` (body over 1 MB),
+    `502` (service unavailable) or `504` (service slower than 10 seconds).
+  license:
+    name: ISC
+    identifier: ISC
+servers:
+  - url: http://localhost:3000
+    description: Local gateway (npm run dev or docker compose)
+tags:
+  - name: Auth
+    description: Accounts and the token lifecycle (auth-service)
+  - name: Notes
+    description: The caller's own notes (notes-service). Every route requires a Bearer access token.
+  - name: Health
+    description: Gateway health, aggregated from every service
+
+paths:
+  /health:
+    get:
+      tags: [Health]
+      operationId: getHealth
+      summary: Aggregated health of the gateway and its services
+      description: Not rate limited. Each service is checked with a 2-second timeout.
+      security: []
+      responses:
+        "200":
+          description: Every service reports healthy
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HealthResponse" }
+              example:
+                success: true
+                data: { service: api-gateway, status: ok, upstreams: { auth: ok, notes: ok } }
+        "503":
+          description: At least one service is down or too slow; `upstreams` shows which
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HealthResponse" }
+              example:
+                success: false
+                data: { service: api-gateway, status: degraded, upstreams: { auth: ok, notes: down } }
+
+  /api/v1/auth/register:
+    post:
+      tags: [Auth]
+      operationId: register
+      summary: Create an account
+      description: Rate limited to 5 registrations per hour per IP.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RegisterRequest" }
+            example: { email: ada@example.com, password: "Secure#Pass1" }
+      responses:
+        "201":
+          description: Account created and signed in
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+            Cache-Control: { $ref: "#/components/headers/Cache-Control-No-Store" }
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SessionResponse"
+                  - properties:
+                      message: { const: Account created }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "409":
+          description: Email already registered
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              example: { success: false, error: An account with this email already exists }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "502": { $ref: "#/components/responses/BadGateway" }
+        "504": { $ref: "#/components/responses/GatewayTimeout" }
+
+  /api/v1/auth/login:
+    post:
+      tags: [Auth]
+      operationId: login
+      summary: Log in with email and password
+      description: |
+        Unknown emails and wrong passwords get the same `401`, in the same time.
+
+        Two limits apply: the gateway allows 5 **failed** logins per IP per 15 minutes
+        (successful logins don't count), and auth-service locks an **account** after 10 failed
+        logins in 15 minutes, whatever IP they come from.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LoginRequest" }
+            example: { email: ada@example.com, password: "Secure#Pass1" }
+      responses:
+        "200":
+          description: Signed in
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+            Cache-Control: { $ref: "#/components/headers/Cache-Control-No-Store" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SessionResponse" }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401":
+          description: Unknown email or wrong password
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              example: { success: false, error: Invalid email or password }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "429":
+          description: |
+            Too many failed logins from this IP (gateway, `Too many requests, please try again later`)
+            or for this account (auth-service, `Too many failed login attempts. Try again later.`).
+          headers:
+            Retry-After: { $ref: "#/components/headers/Retry-After" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              example: { success: false, error: Too many failed login attempts. Try again later. }
+        "502": { $ref: "#/components/responses/BadGateway" }
+        "504": { $ref: "#/components/responses/GatewayTimeout" }
+
+  /api/v1/auth/refresh:
+    post:
+      tags: [Auth]
+      operationId: refresh
+      summary: Exchange a refresh token for a new token pair
+      description: |
+        The submitted refresh token is revoked, so store the new one. Replaying a token that was
+        already used revokes every session of that user. Rate limited to 30 per minute per IP.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RefreshTokenRequest" }
+      responses:
+        "200":
+          description: New token pair
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+            Cache-Control: { $ref: "#/components/headers/Cache-Control-No-Store" }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { const: true }
+                  data: { $ref: "#/components/schemas/AuthTokens" }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401":
+          description: Invalid, revoked or expired refresh token
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              examples:
+                invalid: { value: { success: false, error: Invalid refresh token } }
+                expired: { value: { success: false, error: Refresh token expired } }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "502": { $ref: "#/components/responses/BadGateway" }
+        "504": { $ref: "#/components/responses/GatewayTimeout" }
+
+  /api/v1/auth/logout:
+    post:
+      tags: [Auth]
+      operationId: logout
+      summary: Revoke a refresh token
+      description: |
+        Idempotent: unknown or already-revoked tokens also return `200`. The access token stays
+        valid until it expires (15 minutes at most).
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RefreshTokenRequest" }
+      responses:
+        "200":
+          description: Logged out
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+            Cache-Control: { $ref: "#/components/headers/Cache-Control-No-Store" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MessageResponse" }
+              example: { success: true, message: Logged out }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "502": { $ref: "#/components/responses/BadGateway" }
+        "504": { $ref: "#/components/responses/GatewayTimeout" }
+
+  /api/v1/auth/me:
+    get:
+      tags: [Auth]
+      operationId: getCurrentUser
+      summary: Get the current user
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: The signed-in user
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+            Cache-Control: { $ref: "#/components/headers/Cache-Control-No-Store" }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { const: true }
+                  data:
+                    type: object
+                    required: [user]
+                    properties:
+                      user: { $ref: "#/components/schemas/User" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: The token is valid but its user no longer exists
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              example: { success: false, error: User not found }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "502": { $ref: "#/components/responses/BadGateway" }
+        "504": { $ref: "#/components/responses/GatewayTimeout" }
+
+  /api/v1/notes:
+    get:
+      tags: [Notes]
+      operationId: listNotes
+      summary: List my notes
+      description: |
+        Sorted pinned first, then most recently updated. Paginate by passing `nextCursor` back as
+        `cursor`; it is `null` on the last page. The cursor marks a position in the sort order, so
+        notes added, edited or deleted between requests never cause an untouched note to be skipped
+        or repeated.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+        - name: cursor
+          in: query
+          description: The `nextCursor` value from the previous page, unchanged
+          schema: { type: string, maxLength: 500 }
+        - name: q
+          in: query
+          description: Case-insensitive search in title and content
+          schema: { type: string, minLength: 1, maxLength: 200 }
+        - name: pinned
+          in: query
+          description: Only pinned (`true`) or unpinned (`false`) notes
+          schema: { type: boolean }
+      responses:
+        "200":
+          description: One page of notes
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { const: true }
+                  data:
+                    type: object
+                    required: [notes, nextCursor]
+                    properties:
+                      notes:
+                        type: array
+                        items: { $ref: "#/components/schemas/Note" }
+                      nextCursor:
+                        type: [string, "null"]
+                        description: Pass as `cursor` for the next page; `null` on the last page
+        "400":
+          description: Invalid `limit`, `pinned`, `q` or `cursor`
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              examples:
+                validation:
+                  value:
+                    {
+                      success: false,
+                      error: Validation failed,
+                      errors: { limit: ['"limit" must be less than or equal to 100'] },
+                    }
+                cursor:
+                  value: { success: false, error: Invalid cursor }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "502": { $ref: "#/components/responses/BadGateway" }
+        "504": { $ref: "#/components/responses/GatewayTimeout" }
+    post:
+      tags: [Notes]
+      operationId: createNote
+      summary: Create a note
+      description: Unknown fields (`userId`, `id`, `createdAt`, …) are ignored.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateNoteRequest" }
+            example: { title: Shopping list, content: "Milk, Eggs", isPinned: false }
+      responses:
+        "201":
+          description: Note created
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/NoteResponse"
+                  - properties:
+                      message: { const: Note created }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "502": { $ref: "#/components/responses/BadGateway" }
+        "504": { $ref: "#/components/responses/GatewayTimeout" }
+
+  /api/v1/notes/{id}:
+    parameters:
+      - $ref: "#/components/parameters/NoteId"
+    get:
+      tags: [Notes]
+      operationId: getNote
+      summary: Get one note
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: The note
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NoteResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NoteNotFound" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "502": { $ref: "#/components/responses/BadGateway" }
+        "504": { $ref: "#/components/responses/GatewayTimeout" }
+    patch:
+      tags: [Notes]
+      operationId: updateNote
+      summary: Update some or all fields of a note
+      description: Fields left out are unchanged. `updatedAt` is refreshed.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateNoteRequest" }
+            example: { isPinned: true }
+      responses:
+        "200":
+          description: Note updated
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/NoteResponse"
+                  - properties:
+                      message: { const: Note updated }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NoteNotFound" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "502": { $ref: "#/components/responses/BadGateway" }
+        "504": { $ref: "#/components/responses/GatewayTimeout" }
+    delete:
+      tags: [Notes]
+      operationId: deleteNote
+      summary: Delete a note
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Note deleted
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MessageResponse" }
+              example: { success: true, message: Note deleted }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NoteNotFound" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "502": { $ref: "#/components/responses/BadGateway" }
+        "504": { $ref: "#/components/responses/GatewayTimeout" }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        The `accessToken` from register, login or refresh. HS256, valid for 15 minutes by default;
+        use `POST /api/v1/auth/refresh` to get a new one.
+
+  parameters:
+    NoteId:
+      name: id
+      in: path
+      required: true
+      description: |
+        Note id (UUID v4). A malformed id gets the same `404` as a missing or foreign note.
+      schema: { type: string, format: uuid }
+
+  headers:
+    X-Request-Id:
+      description: Request id, generated by the gateway or echoed from a valid client-supplied one
+      schema: { type: string }
+    Cache-Control-No-Store:
+      description: Set on every auth response, which can carry tokens
+      schema: { type: string, const: no-store }
+    Retry-After:
+      description: Seconds until the limit resets
+      schema: { type: integer }
+    RateLimit-Limit:
+      description: Requests allowed in the current window
+      schema: { type: integer }
+    RateLimit-Remaining:
+      description: Requests left in the current window
+      schema: { type: integer }
+    RateLimit-Reset:
+      description: Seconds until the current window resets
+      schema: { type: integer }
+    RateLimit-Policy:
+      description: The limit and window in seconds, e.g. `300;w=60`
+      schema: { type: string }
+
+  responses:
+    ValidationFailed:
+      description: Validation failed; `errors` lists the messages per field
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+          example:
+            success: false
+            error: Validation failed
+            errors:
+              email: [Email must be a valid email address]
+              password: [Password must be at least 8 characters long]
+    Unauthorized:
+      description: Missing, malformed, invalid or expired access token
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+          examples:
+            missing: { value: { success: false, error: Missing or malformed Authorization header } }
+            invalid: { value: { success: false, error: Invalid or expired access token } }
+    NoteNotFound:
+      description: |
+        No such note for this user. Another user's note, an unknown id and a malformed id all get
+        this same response, so note ids can't be probed.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+          example: { success: false, error: Note not found }
+    PayloadTooLarge:
+      description: |
+        Body too large: over 1 MB at the gateway, or over the service's own limit
+        (auth-service 100 KB, notes-service 1 MB)
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+          example: { success: false, error: Request body too large }
+    TooManyRequests:
+      description: Rate limit exceeded for this IP
+      headers:
+        Retry-After: { $ref: "#/components/headers/Retry-After" }
+        RateLimit-Limit: { $ref: "#/components/headers/RateLimit-Limit" }
+        RateLimit-Remaining: { $ref: "#/components/headers/RateLimit-Remaining" }
+        RateLimit-Reset: { $ref: "#/components/headers/RateLimit-Reset" }
+        RateLimit-Policy: { $ref: "#/components/headers/RateLimit-Policy" }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+          example: { success: false, error: "Too many requests, please try again later" }
+    BadGateway:
+      description: The service behind this route is unavailable
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+          example: { success: false, error: Service unavailable }
+    GatewayTimeout:
+      description: The service behind this route didn't answer in time (10 seconds by default)
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+          example: { success: false, error: Service timed out }
+
+  schemas:
+    ErrorResponse:
+      type: object
+      required: [success, error]
+      properties:
+        success: { const: false }
+        error:
+          type: string
+          description: Human-readable message
+        errors:
+          type: object
+          description: Per-field messages; only on validation failures
+          additionalProperties:
+            type: array
+            items: { type: string }
+
+    MessageResponse:
+      type: object
+      required: [success, message]
+      properties:
+        success: { const: true }
+        message: { type: string }
+
+    User:
+      type: object
+      required: [id, email, createdAt, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string, format: email, example: ada@example.com }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    AuthTokens:
+      type: object
+      required: [accessToken, refreshToken, tokenType, expiresIn]
+      properties:
+        accessToken:
+          type: string
+          description: "JWT for the `Authorization: Bearer` header"
+        refreshToken:
+          type: string
+          description: Opaque token for `POST /api/v1/auth/refresh`. Single use
+        tokenType: { const: Bearer }
+        expiresIn:
+          type: integer
+          description: Access token lifetime in seconds
+          example: 900
+
+    SessionResponse:
+      type: object
+      required: [success, data]
+      properties:
+        success: { const: true }
+        message: { type: string }
+        data:
+          allOf:
+            - type: object
+              required: [user]
+              properties:
+                user: { $ref: "#/components/schemas/User" }
+            - $ref: "#/components/schemas/AuthTokens"
+
+    RegisterRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 254
+          description: Stored trimmed and lowercased
+        password:
+          type: string
+          minLength: 8
+          maxLength: 128
+          description: At least one uppercase letter, one lowercase letter and one number
+          pattern: ^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string, format: email, maxLength: 254 }
+        password: { type: string, maxLength: 128 }
+
+    RefreshTokenRequest:
+      type: object
+      required: [refreshToken]
+      properties:
+        refreshToken: { type: string }
+
+    Note:
+      type: object
+      required: [id, title, content, isPinned, createdAt, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        title: { type: string, minLength: 1, maxLength: 200, example: Shopping list }
+        content: { type: string, maxLength: 100000, example: "Milk, Eggs" }
+        isPinned: { type: boolean }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    NoteResponse:
+      type: object
+      required: [success, data]
+      properties:
+        success: { const: true }
+        message: { type: string }
+        data:
+          type: object
+          required: [note]
+          properties:
+            note: { $ref: "#/components/schemas/Note" }
+
+    CreateNoteRequest:
+      type: object
+      required: [title]
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: Trimmed; must not be empty afterwards
+        content: { type: string, maxLength: 100000, default: "" }
+        isPinned: { type: boolean, default: false }
+
+    UpdateNoteRequest:
+      type: object
+      minProperties: 1
+      description: At least one of `title`, `content`, `isPinned`; same rules as create
+      properties:
+        title: { type: string, minLength: 1, maxLength: 200 }
+        content: { type: string, maxLength: 100000 }
+        isPinned: { type: boolean }
+
+    HealthResponse:
+      type: object
+      required: [success, data]
+      properties:
+        success: { type: boolean }
+        data:
+          type: object
+          required: [service, status, upstreams]
+          properties:
+            service: { const: api-gateway }
+            status: { enum: [ok, degraded] }
+            upstreams:
+              type: object
+              additionalProperties: { enum: [ok, down] }
+              example: { auth: ok, notes: ok }
