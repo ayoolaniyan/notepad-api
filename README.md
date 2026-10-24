@@ -17,12 +17,9 @@ Each service owns its own database and is deployed independently. Services trust
 - [Repository structure](#repository-structure)
 - [Project status](#project-status)
 - [Getting started](#getting-started)
-- [Configuration](#configuration)
+- [Services](#services)
 - [API reference](#api-reference)
 - [Authentication design](#authentication-design)
-- [Database schema](#database-schema)
-- [API gateway](#api-gateway)
-- [Shared package](#shared-package)
 - [Available scripts](#available-scripts)
 - [Testing](#testing)
 - [Continuous integration](#continuous-integration)
@@ -54,7 +51,7 @@ Each service owns its own database and is deployed independently. Services trust
 - **One public entry point.** Clients only talk to the gateway. Services are internal and can be bound to private interfaces.
 - **Database per service.** No service reads another service's tables.
 - **Stateless auth between services.** The auth-service issues short-lived JWT access tokens. Other services verify them locally with the shared secret, so no call to the auth-service is needed per request. The gateway doesn't verify tokens and never holds the secret.
-- **Shared package.** Common types, HTTP helpers and JWT verification live in [`@notepad/shared`](#shared-package), so every service handles errors and checks tokens the same way.
+- **Shared package.** Common types, HTTP helpers and JWT verification live in [`@notepad/shared`](shared/README.md), so every service handles errors and checks tokens the same way.
 
 ---
 
@@ -80,7 +77,7 @@ Each service owns its own database and is deployed independently. Services trust
 
 ```
 notepad-api/
-├── README.md
+├── README.md                        # This file; each package has its own README too
 ├── package.json                     # Workspace root: workspaces + build/dev scripts
 ├── package-lock.json                # Single lockfile for all packages
 ├── tsconfig.base.json               # Compiler options every package extends
@@ -90,6 +87,8 @@ notepad-api/
 ├── .github/
 │   ├── workflows/ci.yml             # Checks, tests and Docker smoke test on every push and PR
 │   └── dependabot.yml               # Weekly dependency, action and base-image updates
+├── docs/openapi.yaml                 # OpenAPI 3.1 spec of the public API (through the gateway)
+├── redocly.yaml                     # Lint rules for the spec (npm run docs:lint)
 ├── scripts/smoke-test.sh            # End-to-end check through the gateway (used by CI)
 ├── jest.config.mjs                  # One Jest project per package, plus integration projects
 ├── Dockerfile                       # One image definition for every service (--build-arg SERVICE=...)
@@ -227,6 +226,10 @@ notepad-api/
 - One multi-stage `Dockerfile` and a `docker-compose.yml` that runs the whole stack, migrations included
 - GitHub Actions CI: checks, tests, and a Docker build with an end-to-end smoke test; Dependabot updates
 
+**Documentation**
+- OpenAPI 3.1 spec of the public API ([`docs/openapi.yaml`](docs/openapi.yaml)), linted in CI
+- A README for each service and the shared package
+
 ### 🚧 Not started
 - User service
 
@@ -335,56 +338,26 @@ curl -X POST http://localhost:3000/api/v1/notes -H "Authorization: Bearer $TOKEN
 
 ---
 
-## Configuration
+## Services
 
-### api-gateway
+Each package documents its own behaviour, configuration, scripts and tests:
 
-| Variable | Default | Description |
-|---|---|---|
-| `PORT` | `3000` | Public HTTP port |
-| `HOST` | all interfaces | Interface to bind |
-| `AUTH_SERVICE_URL` | `http://localhost:3001` | Internal address of auth-service |
-| `NOTES_SERVICE_URL` | `http://localhost:3002` | Internal address of notes-service |
-| `UPSTREAM_TIMEOUT_MS` | `10000` | After this, the gateway gives up on a service and returns `504` |
-| `CORS_ORIGINS` | `http://localhost:5173` | Comma-separated allowed front-end origins. `*` is rejected |
-| `TRUST_PROXY` | `0` | Number of load balancers in front of the gateway. `0` = clients connect directly. **Set this correctly**: too high lets clients fake their IP, too low puts every client behind one IP |
-| `MAX_BODY_BYTES` | `1048576` (1 MB) | Larger requests are rejected with `413` before reaching a service |
-| `RATE_LIMIT_<NAME>_MAX` / `_WINDOW_MS` | see [Rate limits](#rate-limits) | `NAME` is `GLOBAL`, `LOGIN`, `REGISTER` or `REFRESH` |
-| `NODE_ENV` | `development` | `production` turns on HSTS and hides error details |
-
-The gateway has no database and doesn't need the JWT secret.
-
-### auth-service
-
-| Variable | Required | Default | Description |
+| Package | Port | README | Covers |
 |---|---|---|---|
-| `DATABASE_URL` | ✅ | — | PostgreSQL connection string (`postgresql://user:pass@host:5432/db?schema=public`) |
-| `JWT_ACCESS_SECRET` | ✅ | — | HMAC secret for signing access tokens. Minimum 32 characters |
-| `NODE_ENV` | | `development` | `development`, `test` or `production` |
-| `PORT` | | `3001` | HTTP port |
-| `ACCESS_TOKEN_TTL_SECONDS` | | `900` (15 min) | Access token lifetime. Minimum 60 |
-| `REFRESH_TOKEN_TTL_DAYS` | | `7` | Refresh token lifetime. Minimum 1 |
-| `JWT_ISSUER` | | `notepad-auth-service` | `iss` claim set on and required from access tokens |
-| `LOGIN_MAX_FAILURES` | | `10` | Failed logins allowed per email before it's locked out (from any IP) |
-| `LOGIN_LOCKOUT_WINDOW_MINUTES` | | `15` | Lockout window |
-| `HOST` | | all interfaces | Interface to bind. In production use `127.0.0.1` or a private address so only the gateway can reach it |
+| api-gateway | `3000` (public) | [`services/api-gateway`](services/api-gateway/README.md) | Routing, request pipeline, rate limits, CORS, security headers, logging, health |
+| auth-service | `3001` (internal) | [`services/auth-service`](services/auth-service/README.md) | Token lifecycle, password hashing, account lockout, `users` and `refresh_tokens` schema |
+| notes-service | `3002` (internal) | [`services/notes-service`](services/notes-service/README.md) | Ownership checks, cursor pagination, search, `notes` schema |
+| `@notepad/shared` | — | [`shared`](shared/README.md) | Response helpers, errors, validation, health, `startServer`, JWT verification |
 
-### notes-service
+The public HTTP contract is [`docs/openapi.yaml`](docs/openapi.yaml) (OpenAPI 3.1), checked in CI with `npm run docs:lint`. Load it into Swagger UI, Redocly or Postman to browse the API or generate a client.
 
-| Variable | Required | Default | Description |
-|---|---|---|---|
-| `DATABASE_URL` | ✅ | — | Connection string for the notes database (separate from auth's) |
-| `JWT_ACCESS_SECRET` | ✅ | — | **Must equal auth-service's value.** Used to verify access tokens |
-| `JWT_ISSUER` | | `notepad-auth-service` | **Must equal auth-service's value** |
-| `NODE_ENV` | | `development` | `development`, `test` or `production` |
-| `PORT` | | `3002` | HTTP port |
-| `HOST` | | all interfaces | Interface to bind (see auth-service) |
+> **`JWT_ACCESS_SECRET` and `JWT_ISSUER` must be identical in auth-service and notes-service.** If they differ, every notes request returns `401`.
 
 ---
 
 ## API reference
 
-Clients use the gateway only:
+Clients use the gateway only. The full contract, with every schema and error response, is in [`docs/openapi.yaml`](docs/openapi.yaml); the examples below show the common cases.
 
 | Base URL (local) | Routes to |
 |---|---|
@@ -392,7 +365,7 @@ Clients use the gateway only:
 | `http://localhost:3000/api/v1/notes/*` | notes-service `/notes/*` |
 | `http://localhost:3000/health` | the gateway's own aggregated health |
 
-Endpoint paths below (`/auth/...`, `/notes/...`) are relative to `http://localhost:3000/api/v1`. Every response carries an `X-Request-Id` header; quote it when reporting a problem. Any route can also return `429` (see [Rate limits](#rate-limits)), `502` if a service is down, or `504` if it timed out.
+Endpoint paths below (`/auth/...`, `/notes/...`) are relative to `http://localhost:3000/api/v1`. Every response carries an `X-Request-Id` header; quote it when reporting a problem. Any route can also return `429` (see [Rate limits](services/api-gateway/README.md#rate-limits)), `502` if a service is down, or `504` if it timed out.
 
 ### Response format
 
@@ -701,132 +674,6 @@ register / login
 
 ---
 
-## Database schema
-
-**auth-service**: `prisma/schema.prisma`
-
-```
-users
-├── id           text (UUID, PK)
-├── email        text, unique
-├── password     text (scrypt hash)
-├── created_at   timestamp
-└── updated_at   timestamp
-
-refresh_tokens
-├── id           text (UUID, PK)
-├── user_id      text → users.id (ON DELETE CASCADE), indexed
-├── token_hash   text, unique (SHA-256 of the token)
-├── expires_at   timestamp
-├── revoked_at   timestamp, nullable
-└── created_at   timestamp
-```
-
-**notes-service**: `prisma/schema.prisma` (separate database)
-
-```
-notes
-├── id           text (UUID, PK)
-├── user_id      text (auth-service user id from the token; no FK, different database)
-├── title        varchar(200)
-├── content      text, default ''
-├── is_pinned    boolean, default false
-├── created_at   timestamp
-└── updated_at   timestamp
-
-index (user_id, is_pinned DESC, updated_at DESC, id DESC)   -- matches the list query's sort order
-```
-
----
-
-## API gateway
-
-### Request pipeline
-
-```
-request → X-Request-Id → access log → security headers → CORS → /health?
-        → global rate limit → body size check → route rate limit → proxy → service
-```
-
-CORS comes before rate limiting, so preflights aren't counted and `429` responses still carry CORS headers a browser can read.
-
-### Rate limits
-
-Per client IP, per gateway instance:
-
-| Route | Default | Notes |
-|---|---|---|
-| Everything | 300 / minute | |
-| `POST /auth/login` | **5 failed attempts / 15 minutes** | Successful logins don't count. Once the limit is hit, every login from that IP is blocked until the window resets |
-| `POST /auth/register` | 5 / hour | |
-| `POST /auth/refresh` | 30 / minute | |
-| `GET /health` | not limited | |
-
-Responses include `RateLimit-Limit`, `RateLimit-Remaining`, `RateLimit-Reset` and `RateLimit-Policy` headers; a `429` also includes `Retry-After` (seconds). Route matching is case-insensitive and ignores a trailing slash, so `/auth/LOGIN` and `/auth/login/` are limited too.
-
-On top of this, auth-service locks out **an account** after 10 failed logins in 15 minutes, whatever IP they come from.
-
-### CORS
-
-- Only origins listed in `CORS_ORIGINS` get CORS headers. Others are not rejected by the gateway, but browsers block the response.
-- Allowed methods: `GET`, `POST`, `PATCH`, `DELETE`. Allowed headers: `Authorization`, `Content-Type`, `X-Request-Id`.
-- No credentials mode: tokens are sent in the `Authorization` header, not cookies.
-- Browser code can read `X-Request-Id`, `RateLimit-*` and `Retry-After`. Preflights are cached for 10 minutes.
-
-### Security headers
-
-| Header | Value |
-|---|---|
-| `Content-Security-Policy` | `default-src 'none'; frame-ancestors 'none'` |
-| `X-Content-Type-Options` | `nosniff` |
-| `Referrer-Policy` | `no-referrer` |
-| `Cross-Origin-Resource-Policy` | `same-site` |
-| `Strict-Transport-Security` | `max-age=15552000; includeSubDomains` (**production only**) |
-| `Cache-Control` | `no-store` on every `/auth/*` response |
-
-`X-Powered-By` is removed, including from service responses.
-
-### Logging
-
-One JSON line per request: method, path (no query string), status, duration, client address and request id. `Authorization` headers, cookies and bodies are never logged. Upstream failures are logged with the service name and request id.
-
----
-
-## Shared package
-
-`@notepad/shared` is consumed like any npm package. A service adds `"@notepad/shared": "*"` to its dependencies and runs `npm install` at the root.
-
-```ts
-import express from "express";
-import { createErrorHandler, createRequireAuth, notFoundHandler, ok, validateBody } from "@notepad/shared";
-
-const requireAuth = createRequireAuth({ secret: process.env.JWT_ACCESS_SECRET!, issuer: "notepad-auth-service" });
-
-const app = express();
-app.use(express.json());
-app.get("/notes", requireAuth, (req, res) => {
-    res.json(ok({ owner: req.user!.id }));       // req.user is typed
-});
-app.use(notFoundHandler);
-app.use(createErrorHandler({ exposeDetails: process.env.NODE_ENV !== "production" }));
-```
-
-| Export | Purpose |
-|---|---|
-| `ApiResponse`, `User`, `AuthUser`, `AccessTokenPayload` | Shared types |
-| `ok(data?, message?)` / `fail(error, errors?)` | Build the standard response envelope |
-| `AppError(status, message, errors?, headers?)` | Throw from anywhere; the error handler turns it into a JSON response (with any extra headers, e.g. `Retry-After`) |
-| `notFoundHandler`, `createErrorHandler({ exposeDetails })` | JSON 404 and centralised error handling |
-| `validateBody(joiSchema)` / `validateQuery(joiSchema)` | Validate and sanitise `req.body` / `req.query`, with per-field errors |
-| `createHealthHandler({ service, checkDatabase, timeoutMs? })` | Standard `GET /health` handler: `503` if the check fails or takes longer than 2 seconds |
-| `startServer(app, { name, port, host?, nodeEnv, onShutdown? })` | Listen (optionally on one interface), exit with an error if the port is taken, shut down gracefully on SIGINT/SIGTERM |
-| `verifyAccessToken(token, { secret, issuer })` | Verify an access token (HS256 only) |
-| `createRequireAuth({ secret, issuer })` | Middleware that requires a Bearer token and sets `req.user` |
-
-`express`, `joi` and `jsonwebtoken` are **peer dependencies**, so each service provides them. This keeps a single copy of Express, which the `req.user` typing depends on.
-
----
-
 ## Available scripts
 
 ### Repository root
@@ -843,6 +690,7 @@ app.use(createErrorHandler({ exposeDetails: process.env.NODE_ENV !== "production
 | `npm run lint:fix` | Lint and apply automatic fixes |
 | `npm run format` | Format all files with Prettier |
 | `npm run format:check` | Check formatting without writing (for CI) |
+| `npm run docs:lint` | Validate `docs/openapi.yaml` with Redocly |
 | `npm test` | Run every test: unit and integration (needs PostgreSQL, see [Testing](#testing)) |
 | `npm run test:unit` | Unit and gateway tests only; no database or running services needed |
 | `npm run test:integration` | auth-service and notes-service against a real test database |
@@ -852,20 +700,9 @@ ESLint uses type information, so `shared` must be built and the Prisma clients g
 
 To hide the one-off formatting commit from `git blame`, run once: `git config blame.ignoreRevsFile .git-blame-ignore-revs`. GitHub applies it automatically.
 
-### Inside each service (`services/auth-service`, `services/notes-service`)
+### Inside each package
 
-These also work from the root with `-w <service>`, e.g. `npm run db:migrate -w notes-service`. The gateway has `dev`, `build`, `start` and `typecheck` only (no database).
-
-| Script | Description |
-|---|---|
-| `npm run dev` | Start with live reload (`tsx watch`) |
-| `npm run build` | Generate the Prisma client and compile to `dist/` |
-| `npm start` | Run the compiled build (`node dist/index.js`) |
-| `npm run typecheck` | Type-check without emitting |
-| `npm run db:migrate` | Create and apply a migration in development |
-| `npm run db:deploy` | Apply pending migrations (production/CI) |
-| `npm run db:generate` | Regenerate the Prisma client |
-| `npm run db:studio` | Open Prisma Studio to browse data |
+Each package's README lists its own scripts (`dev`, `build`, `start`, `typecheck`, and the `db:*` Prisma scripts in the two services). Run them from the root with `-w <name>`, e.g. `npm run db:migrate -w notes-service`.
 
 ---
 
@@ -908,7 +745,7 @@ TEST_POSTGRES_URL=postgresql://user:pass@db-host:5432 npm run test:integration
 
 | Job | Steps |
 |---|---|
-| **Format, lint and typecheck** | `npm ci`, `npm run build` (shared and Prisma clients), `format:check`, `lint`, `typecheck` |
+| **Format, lint and typecheck** | `npm ci`, `npm run build` (shared and Prisma clients), `format:check`, `lint`, `typecheck`, `docs:lint` |
 | **Tests** | Every Jest project with coverage thresholds, against a PostgreSQL 17 service container. The coverage report is uploaded as the `coverage` artifact |
 | **Docker images and smoke test** | Builds every image, starts the compose stack (migrations included) and runs [`scripts/smoke-test.sh`](scripts/smoke-test.sh) through the gateway. Service logs are printed if anything fails |
 
@@ -931,7 +768,7 @@ To block merging when CI fails, add a branch protection rule (or ruleset) on `ma
 | 5 | **Notes service**: own database, user-scoped CRUD, JWT-protected | ✅ Done |
 | 6 | API gateway: routing, **rate limiting** (especially login), CORS, security headers | ✅ Done |
 | 7 | Tooling: ESLint + Prettier, Jest + Supertest suite, `docker-compose.yml`, GitHub Actions CI | ✅ Done |
-| 8 | Documentation: OpenAPI spec, per-service READMEs | ⏳ Next |
+| 8 | Documentation: OpenAPI spec, per-service READMEs | ✅ Done |
 
 ---
 

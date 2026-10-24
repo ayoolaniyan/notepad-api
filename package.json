@@ -19,11 +19,13 @@
     "test": "jest",
     "test:unit": "jest --selectProjects shared api-gateway auth-service notes-service",
     "test:integration": "jest --selectProjects auth-service:integration notes-service:integration",
-    "test:coverage": "jest --coverage"
+    "test:coverage": "jest --coverage",
+    "docs:lint": "redocly lint docs/openapi.yaml"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@jest/globals": "^30.5.2",
+    "@redocly/cli": "^2.71.0",
     "@swc/core": "^1.16.20",
     "@swc/jest": "^0.2.39",
     "@types/supertest": "^7.2.1",
