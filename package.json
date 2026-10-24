@@ -27,7 +27,7 @@
     "@swc/core": "^1.16.20",
     "@swc/jest": "^0.2.39",
     "@types/supertest": "^7.2.1",
-    "concurrently": "^9.2.1",
+    "concurrently": "^10.0.6",
     "eslint": "^10.13.0",
     "eslint-config-prettier": "^10.1.8",
     "globals": "^17.13.0",
