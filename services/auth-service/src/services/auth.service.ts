@@ -121,6 +121,18 @@ export async function logout(refreshToken: string): Promise<void> {
     });
 }
 
+// Revokes every refresh token of the user, signing them out on all devices
+export async function logoutAll(userId: string): Promise<void> {
+    await revokeAllForUser(userId);
+}
+
+// Deletes refresh tokens past their expiry. Revoked tokens are kept until then,
+// because reuse detection needs them to recognise a replayed token.
+export async function deleteExpiredRefreshTokens(now = new Date()): Promise<number> {
+    const { count } = await prisma.refreshToken.deleteMany({ where: { expiresAt: { lt: now } } });
+    return count;
+}
+
 export async function getUserById(id: string): Promise<PublicUser> {
     const user = await prisma.user.findUnique({ where: { id }, select: publicUserSelect });
     if (!user) {

@@ -26,6 +26,11 @@ authRouter.post("/logout", validateBody(refreshTokenSchema), async (req, res) =>
     res.json(ok(undefined, "Logged out"));
 });
 
+authRouter.post("/logout-all", requireAuth, async (req, res) => {
+    await authService.logoutAll(req.user!.id);
+    res.json(ok(undefined, "Logged out of all devices"));
+});
+
 authRouter.get("/me", requireAuth, async (req, res) => {
     const user = await authService.getUserById(req.user!.id);
     res.json(ok({ user }));

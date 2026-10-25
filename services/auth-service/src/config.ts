@@ -12,6 +12,7 @@ interface Config {
         issuer: string;
     };
     refreshTokenTtlDays: number;
+    refreshTokenCleanupIntervalMs: number;
     loginThrottle: {
         maxFailures: number;
         windowMs: number;
@@ -34,6 +35,7 @@ const envSchema = Joi.object({
     }),
     ACCESS_TOKEN_TTL_SECONDS: Joi.number().integer().min(60).default(900),
     REFRESH_TOKEN_TTL_DAYS: Joi.number().integer().min(1).default(7),
+    REFRESH_TOKEN_CLEANUP_INTERVAL_MINUTES: Joi.number().integer().min(1).default(60),
     JWT_ISSUER: Joi.string().default("notepad-auth-service"),
     LOGIN_MAX_FAILURES: Joi.number().integer().min(1).default(10),
     LOGIN_LOCKOUT_WINDOW_MINUTES: Joi.number().integer().min(1).default(15),
@@ -60,6 +62,7 @@ export const config: Config = {
         issuer: value.JWT_ISSUER,
     },
     refreshTokenTtlDays: value.REFRESH_TOKEN_TTL_DAYS,
+    refreshTokenCleanupIntervalMs: value.REFRESH_TOKEN_CLEANUP_INTERVAL_MINUTES * 60_000,
     loginThrottle: {
         maxFailures: value.LOGIN_MAX_FAILURES,
         windowMs: value.LOGIN_LOCKOUT_WINDOW_MINUTES * 60_000,

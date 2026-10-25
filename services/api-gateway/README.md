@@ -74,6 +74,8 @@ On top of this, auth-service locks out **an account** after 10 failed logins in 
 
 The client IP comes from `TRUST_PROXY`: with `0` it's the socket address, with `n` it's the `n`th address from the right of `X-Forwarded-For`. Set it to the number of load balancers in front of the gateway. Too high lets clients fake their IP; too low puts every client behind the load balancer's IP.
 
+Counters are kept in memory, so limits apply per gateway instance and reset on restart. Under Docker Desktop (macOS, Windows) every client appears to come from one address and shares the limits; Linux hosts keep real client IPs.
+
 ### Body size
 
 Requests whose `Content-Length` exceeds `MAX_BODY_BYTES` (1 MB) get `413` before any service is contacted. Each service also enforces its own limit (auth 100 KB, notes 1 MB), which covers chunked uploads that don't send `Content-Length`.
@@ -159,8 +161,6 @@ The tests start fake upstream servers on random ports, so no database or real se
 
 ---
 
-## Limitations
+## Trade-offs
 
-- **Rate-limit counters live in memory**, per instance, and reset on restart. Several instances need a shared store (`rate-limit-redis`).
-- **The body-size check relies on `Content-Length`.** Chunked uploads skip it; the services' own limits still apply.
-- **Docker Desktop hides client IPs.** On macOS and Windows, all requests to the published port appear to come from one address, so every client shares the per-IP limits. Linux hosts keep real client IPs.
+The design trade-offs of this service, and what would replace them, are listed in the root README under [Design trade-offs and next steps](../../README.md#design-trade-offs-and-next-steps).

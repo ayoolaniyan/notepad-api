@@ -4,6 +4,7 @@ import request from "supertest";
 import { createApp } from "../src/app";
 import { config } from "../src/config";
 import { prisma } from "../src/database";
+import { deleteExpiredRefreshTokens } from "../src/services/auth.service";
 import { hashRefreshToken } from "../src/utils/tokens";
 
 const app = createApp();
@@ -191,6 +192,55 @@ describe("POST /auth/logout", () => {
         const res = await request(app).post("/auth/logout").send({ refreshToken: "never-issued" });
 
         expect(res.status).toBe(200);
+    });
+});
+
+describe("POST /auth/logout-all", () => {
+    it("revokes every session of the caller and no one else's", async () => {
+        const { email, accessToken, refreshToken: first } = await register();
+        const { refreshToken: second } = (await login(email)).body.data;
+        const other = await register();
+
+        const res = await request(app).post("/auth/logout-all").set("Authorization", `Bearer ${accessToken}`);
+
+        expect(res.status).toBe(200);
+        expect(res.body.message).toBe("Logged out of all devices");
+        expect((await refresh(first)).status).toBe(401);
+        expect((await refresh(second)).status).toBe(401);
+        expect((await refresh(other.refreshToken)).status).toBe(200);
+    });
+
+    it("returns 401 without a token", async () => {
+        expect((await request(app).post("/auth/logout-all")).status).toBe(401);
+    });
+});
+
+describe("expired refresh token cleanup", () => {
+    const tokenExists = async (token: string) =>
+        (await prisma.refreshToken.count({ where: { tokenHash: hashRefreshToken(token) } })) === 1;
+
+    it("deletes expired tokens, revoked or not, and keeps unexpired revoked ones for reuse detection", async () => {
+        const { refreshToken: expired } = await register();
+        const { refreshToken: expiredRevoked } = await register();
+        const { refreshToken: revoked } = await register();
+        const { refreshToken: active } = await register();
+        const past = new Date(Date.now() - 1000);
+        await prisma.refreshToken.update({
+            where: { tokenHash: hashRefreshToken(expired) },
+            data: { expiresAt: past },
+        });
+        await prisma.refreshToken.update({
+            where: { tokenHash: hashRefreshToken(expiredRevoked) },
+            data: { expiresAt: past, revokedAt: past },
+        });
+        await request(app).post("/auth/logout").send({ refreshToken: revoked });
+
+        expect(await deleteExpiredRefreshTokens()).toBeGreaterThanOrEqual(2);
+
+        expect(await tokenExists(expired)).toBe(false);
+        expect(await tokenExists(expiredRevoked)).toBe(false);
+        expect(await tokenExists(revoked)).toBe(true);
+        expect(await tokenExists(active)).toBe(true);
     });
 });
 

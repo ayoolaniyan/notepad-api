@@ -24,7 +24,7 @@ Each service owns its own database and is deployed independently. Services trust
 - [Testing](#testing)
 - [Continuous integration](#continuous-integration)
 - [Roadmap](#roadmap)
-- [Known limitations](#known-limitations)
+- [Design trade-offs and next steps](#design-trade-offs-and-next-steps)
 
 ---
 
@@ -170,7 +170,8 @@ notepad-api/
 - Strict TypeScript build and npm scripts for dev, build and database tasks
 
 **Authentication**
-- Register, login, refresh, logout and "current user" endpoints
+- Register, login, refresh, logout, "log out of all devices" and "current user" endpoints
+- Expired refresh tokens are deleted by a scheduled job; revoked ones are kept until they expire, so replay detection still works
 - scrypt password hashing with OWASP-recommended parameters
 - Short-lived JWT access tokens, pinned to algorithm and issuer
 - Rotating refresh tokens, stored hashed in the database
@@ -222,7 +223,7 @@ notepad-api/
 
 **Tooling**
 - ESLint (type-aware) and Prettier, with `lint` and `format:check` scripts
-- Jest + Supertest suite: unit tests for every package, gateway tests against fake upstreams, and integration tests against a real database (138 tests, ~91% line coverage)
+- Jest + Supertest suite: unit tests for every package, gateway tests against fake upstreams, and integration tests against a real database (145 tests, ~91% line coverage)
 - One multi-stage `Dockerfile` and a `docker-compose.yml` that runs the whole stack, migrations included
 - GitHub Actions CI: checks, tests, and a Docker build with an end-to-end smoke test; Dependabot updates
 
@@ -260,6 +261,8 @@ This starts PostgreSQL (creating `notepad_auth` and `notepad_notes` on first run
 | `docker compose down -v` | Stop and delete the database volume |
 
 Images come from the single root [`Dockerfile`](Dockerfile) (`--build-arg SERVICE=<name>`). It builds in a full install stage, then copies the compiled output into a runtime image with production dependencies only, running as the non-root `node` user. A `migrate` target holds the Prisma CLI for the migration jobs.
+
+> **The compose stack is for local use.** Every service connects as the `postgres` superuser with the password from `.env`, and nothing terminates TLS. Production needs per-service database users, secrets from a secret manager, and HTTPS in front of the gateway (a load balancer or nginx) with `TRUST_PROXY` set to match. On macOS and Windows, Docker Desktop also makes every client appear to come from one IP, so the per-IP rate limits are shared; Linux hosts keep real client IPs.
 
 ### Prerequisites (local development)
 
@@ -322,6 +325,8 @@ npm run dev                          # watches shared + gateway (3000) + auth (3
 ```
 
 Everything restarts on changes to its own code or to `shared/`. Use `npm run dev:gateway`, `dev:auth` or `dev:notes` to run just one.
+
+Services compile against `shared/dist`, so if you run one service's script directly after a fresh clone, build the shared package first: `npm run build -w @notepad/shared`.
 
 ### 5. Check it works
 
@@ -389,6 +394,7 @@ All responses share one envelope:
 | `POST` | `/auth/login` | — | Log in with email and password |
 | `POST` | `/auth/refresh` | — | Exchange a refresh token for a new token pair |
 | `POST` | `/auth/logout` | — | Revoke a refresh token |
+| `POST` | `/auth/logout-all` | Bearer | Revoke every refresh token of the current user |
 | `GET` | `/auth/me` | Bearer | Get the current user |
 
 ---
@@ -483,6 +489,21 @@ curl -X POST http://localhost:3000/api/v1/auth/logout \
 **`200 OK`**: `{ "success": true, "message": "Logged out" }`
 
 Idempotent: unknown or already-revoked tokens also return `200`. The access token stays valid until it expires (15 minutes at most).
+
+---
+
+#### `POST /auth/logout-all`
+
+```bash
+curl -X POST http://localhost:3000/api/v1/auth/logout-all \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIs…"
+```
+
+**`200 OK`**: `{ "success": true, "message": "Logged out of all devices" }`
+
+Revokes every refresh token of the signed-in user, so no device can refresh any more. Access tokens already issued stay valid until they expire.
+
+**Errors:** `401` missing, malformed, invalid or expired access token
 
 ---
 
@@ -643,7 +664,7 @@ register / login
  POST /auth/refresh { refreshToken }
       │  old refresh token revoked, new pair issued
       ▼
- repeat… until POST /auth/logout
+ repeat… until POST /auth/logout (this device) or /auth/logout-all (every device)
 ```
 
 ### Security measures
@@ -714,9 +735,9 @@ Tests use **Jest** with **Supertest**, compiled by SWC (`npm run typecheck` chec
 |---|---|---|
 | `shared` | Error handler, validation, health check, JWT verification and `requireAuth` | Nothing |
 | `api-gateway` | Routing and path rewriting, request ids, security headers, CORS, 413/502/504, health, every rate limit | Nothing (fake upstream servers on random ports) |
-| `auth-service` | Password hashing, tokens, per-account lockout, validation schemas | Nothing |
+| `auth-service` | Password hashing, tokens, per-account lockout, token-cleanup schedule, validation schemas | Nothing |
 | `notes-service` | Validation schemas | Nothing |
-| `auth-service:integration` | Register, login, lockout, refresh rotation and replay detection, logout, `/me` | PostgreSQL |
+| `auth-service:integration` | Register, login, lockout, refresh rotation and replay detection, logout, log out everywhere, expired-token cleanup, `/me` | PostgreSQL |
 | `notes-service:integration` | CRUD, ownership isolation, search, filters, cursor pagination | PostgreSQL |
 
 Run one project with `npx jest --selectProjects <name>`, or one file with `npx jest <path>`.
@@ -772,19 +793,28 @@ To block merging when CI fails, add a branch protection rule (or ruleset) on `ma
 
 ---
 
-## Known limitations
+## Design trade-offs and next steps
 
-- **Rate-limit and lockout counters live in memory.** They're per instance and reset on restart. Running several gateway or auth instances needs a shared store such as Redis (planned as a follow-up: `rate-limit-redis` in the gateway and a Redis-backed lockout in auth-service).
-- **The account lockout can be used to lock someone out.** Anyone who knows an email can fail 10 logins and block that account for 15 minutes. This is the usual trade-off against credential stuffing; CAPTCHA or emailed unlock links would soften it.
-- **Docker Desktop hides client IPs.** On macOS and Windows, every request to the published gateway port appears to come from one internal address, so the per-IP rate limits are shared by all clients. Linux hosts keep real client IPs. Production should put the gateway behind a load balancer and set `TRUST_PROXY`.
-- **The compose file is for local use.** Every service connects as the `postgres` superuser, with the password from `.env`. Production needs per-service database users and secrets from a secret manager.
-- **No TLS yet.** Production needs HTTPS terminated in front of the gateway (a load balancer or nginx), with `TRUST_PROXY` set to match.
-- **The gateway's body-size check relies on `Content-Length`.** Chunked uploads skip it, but each service still enforces its own limit (auth 100 KB, notes 1 MB).
-- **Revoked and expired refresh tokens are never cleaned up.** A periodic cleanup job is needed.
-- **No "log out of all devices" or password-change endpoint yet.** The internal revoke-all logic already exists.
-- **Access tokens can't be revoked before they expire.** Logout revokes the refresh token only, and the access token stays valid for up to 15 minutes. This is the standard trade-off for stateless JWTs.
-- **Any service holding the JWT secret could also forge tokens.** HS256 uses one secret for signing and verifying, and notes-service has it. Switching to RS256 (auth signs with a private key, other services verify with the public key) is the recommended next security step.
-- **Concurrent edits to the same note: last write wins.** Two devices editing one note can overwrite each other. Optimistic locking (send the last seen `updatedAt`, get `409` on conflict) would prevent it.
-- **Notes outlive their owner.** There's no foreign key across databases, so if account deletion is added, the notes-service will need to be told (an event or cleanup job).
-- **Search uses `ILIKE`**, which scans a user's notes. That's fine at this scale, but Postgres full-text search or `pg_trgm` would be needed for large accounts.
-- **`shared/` must be built before services compile.** The root `build`, `typecheck` and `dev*` scripts handle this. If you run a service script directly after a fresh clone, run `npm run build -w @notepad/shared` first.
+Deliberate simplifications for a project of this size, why each is acceptable today, and what would replace it. The per-service READMEs have the implementation details.
+
+**Scaling**
+
+| Trade-off | Why it's acceptable now | Next step |
+|---|---|---|
+| Rate-limit and lockout counters live in memory, per instance | One gateway and one auth-service instance; counters only need to survive a window of minutes | A shared Redis store: `rate-limit-redis` in the gateway, a Redis-backed lockout in auth-service |
+| Note search uses `ILIKE` | Every query is scoped to one user's notes and served by the `user_id` index, so the scan stays small | Postgres full-text search (`tsvector` + GIN index) or `pg_trgm` for large accounts |
+
+**Security**
+
+| Trade-off | Why it's acceptable now | Next step |
+|---|---|---|
+| HS256: every service that verifies tokens holds the signing secret, so notes-service could also mint them | Two services, deployed together and equally trusted. The gateway never holds the secret | RS256 or EdDSA: auth-service signs with a private key and publishes a JWKS; other services only get the public key |
+| Access tokens stay valid until they expire, even after logout or "log out of all devices" | Stateless verification needs no auth-service call per request, and the 15-minute lifetime bounds the exposure | A per-user "tokens issued before" timestamp, or a `jti` denylist, if immediate revocation is needed |
+| Anyone who knows an email can trigger its lockout (10 failures, 15 minutes) | The intended trade against credential stuffing spread across many IPs. The lockout is temporary and never reveals whether the account exists | CAPTCHA after a few failures, or an emailed unlock link |
+
+**Data**
+
+| Trade-off | Why it's acceptable now | Next step |
+|---|---|---|
+| Concurrent edits to one note: last write wins | Notes are single-user, so conflicts only happen between one person's devices | Optimistic locking: the client sends the `updatedAt` it last saw and gets `409` on a mismatch |
+| Notes have no foreign key to their owner (separate databases) | There's no account deletion yet, so a note's owner can't disappear | auth-service publishes a `user.deleted` event (transactional outbox) and notes-service deletes that user's notes |
