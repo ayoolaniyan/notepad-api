@@ -132,8 +132,6 @@ Integration tests create and migrate `notepad_notes_test` on `TEST_POSTGRES_URL`
 
 ---
 
-## Limitations
+## Trade-offs
 
-- **Concurrent edits: last write wins.** Optimistic locking (send the last seen `updatedAt`, get `409` on conflict) would prevent overwrites.
-- **Notes outlive their owner.** There's no foreign key across databases, so account deletion (when added) will need an event or cleanup job here.
-- **Search uses `ILIKE`**, which scans the user's notes. Full-text search or `pg_trgm` would be needed for large accounts.
+The design trade-offs of this service, and what would replace them, are listed in the root README under [Design trade-offs and next steps](../../README.md#design-trade-offs-and-next-steps).

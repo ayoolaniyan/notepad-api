@@ -18,6 +18,7 @@ Paths are as the service sees them; the gateway serves them under `/api/v1`.
 | `POST` | `/auth/login` | — | Log in; returns the user and a token pair |
 | `POST` | `/auth/refresh` | — | Revoke the given refresh token and issue a new pair |
 | `POST` | `/auth/logout` | — | Revoke a refresh token (idempotent) |
+| `POST` | `/auth/logout-all` | Bearer | Revoke every refresh token of the caller ("log out of all devices") |
 | `GET` | `/auth/me` | Bearer | The current user |
 | `GET` | `/health` | — | Database check with a 2-second timeout (`200` or `503`). Used by the gateway; not exposed publicly |
 
@@ -38,7 +39,9 @@ Request bodies are limited to 100 KB.
 
 **Reuse detection.** Presenting a token that's already revoked means it was stolen or replayed, so every session of that user is revoked. The loser of a concurrent refresh race is treated the same way.
 
-**Logout** revokes the refresh token only. The access token stays valid until it expires.
+**Logout** revokes the presented refresh token; **logout-all** revokes every refresh token of the caller. In both cases access tokens already issued stay valid until they expire.
+
+**Cleanup.** [`utils/tokenCleanup.ts`](src/utils/tokenCleanup.ts) runs at startup and every `REFRESH_TOKEN_CLEANUP_INTERVAL_MINUTES` (60), deleting refresh tokens past their expiry. Revoked tokens are kept until they expire, because reuse detection needs them to recognise a replay; once expired, a token is rejected anyway. The delete is idempotent, so running several instances is safe. Failures are logged and retried on the next run.
 
 ### Passwords
 
@@ -101,6 +104,7 @@ Read from the environment (or `.env`, see [`.env.example`](.env.example)) and va
 | `JWT_ISSUER` | | `notepad-auth-service` | `iss` claim on access tokens. **notes-service must use the same value** |
 | `ACCESS_TOKEN_TTL_SECONDS` | | `900` (15 min) | Access token lifetime. Minimum 60 |
 | `REFRESH_TOKEN_TTL_DAYS` | | `7` | Refresh token lifetime. Minimum 1 |
+| `REFRESH_TOKEN_CLEANUP_INTERVAL_MINUTES` | | `60` | How often expired refresh tokens are deleted. Minimum 1 |
 | `LOGIN_MAX_FAILURES` | | `10` | Failed logins allowed per email before it's locked out |
 | `LOGIN_LOCKOUT_WINDOW_MINUTES` | | `15` | Lockout window |
 | `PORT` | | `3001` | HTTP port |
@@ -137,18 +141,14 @@ Run them from the root with `-w auth-service`.
 ## Tests
 
 ```bash
-npx jest --selectProjects auth-service                 # unit: passwords, tokens, lockout, validation
+npx jest --selectProjects auth-service                 # unit: passwords, tokens, lockout, cleanup schedule, validation
 npx jest --selectProjects auth-service:integration     # needs PostgreSQL
 ```
 
-Integration tests create and migrate `notepad_auth_test` on `TEST_POSTGRES_URL` (default `postgresql://postgres:postgres@localhost:5432`) and cover register, login, lockout, refresh rotation and replay detection, logout and `/me`. [`test/setup-env.ts`](test/setup-env.ts) sets every variable the config reads, so a local `.env` doesn't affect results, and lowers `LOGIN_MAX_FAILURES` to 3. See [Testing](../../README.md#testing) for details.
+Integration tests create and migrate `notepad_auth_test` on `TEST_POSTGRES_URL` (default `postgresql://postgres:postgres@localhost:5432`) and cover register, login, lockout, refresh rotation and replay detection, logout, logout-all, expired-token cleanup and `/me`. [`test/setup-env.ts`](test/setup-env.ts) sets every variable the config reads, so a local `.env` doesn't affect results, and lowers `LOGIN_MAX_FAILURES` to 3. See [Testing](../../README.md#testing) for details.
 
 ---
 
-## Limitations
+## Trade-offs
 
-- **Lockout counters live in memory**, per instance, and reset on restart.
-- **The lockout can be used to lock someone out**: anyone who knows an email can fail 10 logins and block it for 15 minutes.
-- **Revoked and expired refresh tokens are never deleted.** A periodic cleanup job is needed.
-- **No "log out of all devices" or password-change endpoint yet**, although revoke-all logic exists internally.
-- **HS256 means any service with the secret can mint tokens.** Moving to RS256 (sign with a private key here, verify with the public key elsewhere) is the planned next step.
+The design trade-offs of this service, and what would replace them, are listed in the root README under [Design trade-offs and next steps](../../README.md#design-trade-offs-and-next-steps).

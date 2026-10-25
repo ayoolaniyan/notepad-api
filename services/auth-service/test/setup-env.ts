@@ -10,6 +10,7 @@ Object.assign(process.env, {
     JWT_ISSUER: "notepad-auth-service",
     ACCESS_TOKEN_TTL_SECONDS: "900",
     REFRESH_TOKEN_TTL_DAYS: "7",
+    REFRESH_TOKEN_CLEANUP_INTERVAL_MINUTES: "60",
     LOGIN_MAX_FAILURES: "3",
     LOGIN_LOCKOUT_WINDOW_MINUTES: "15",
 });
