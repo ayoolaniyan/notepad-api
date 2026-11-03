@@ -17,8 +17,8 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "jest",
-    "test:unit": "jest --selectProjects shared api-gateway auth-service notes-service",
-    "test:integration": "jest --selectProjects auth-service:integration notes-service:integration",
+    "test:unit": "jest --selectProjects shared api-gateway auth-service notes-service mcp-server",
+    "test:integration": "jest --selectProjects auth-service:integration notes-service:integration mcp-server:integration",
     "test:coverage": "jest --coverage",
     "docs:lint": "redocly lint docs/openapi.yaml"
   },

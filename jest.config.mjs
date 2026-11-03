@@ -46,6 +46,7 @@ export default {
         }),
         service("auth-service", { displayName: "auth-service", testMatch: ["<rootDir>/src/**/*.test.ts"] }),
         service("notes-service", { displayName: "notes-service", testMatch: ["<rootDir>/src/**/*.test.ts"] }),
+        service("mcp-server", { displayName: "mcp-server", testMatch: ["<rootDir>/src/**/*.test.ts"], setupFiles: [] }),
         service("auth-service", {
             displayName: "auth-service:integration",
             testMatch: ["<rootDir>/test/**/*.int.test.ts"],
@@ -55,6 +56,14 @@ export default {
             displayName: "notes-service:integration",
             testMatch: ["<rootDir>/test/**/*.int.test.ts"],
             globalSetup: "<rootDir>/test/global-setup.ts",
+        }),
+        // Runs the MCP tools against a real gateway, auth-service and notes-service (child processes)
+        service("mcp-server", {
+            displayName: "mcp-server:integration",
+            testMatch: ["<rootDir>/test/**/*.int.test.ts"],
+            setupFiles: [],
+            globalSetup: "<rootDir>/test/global-setup.ts",
+            globalTeardown: "<rootDir>/test/global-teardown.ts",
         }),
     ],
     collectCoverageFrom: [

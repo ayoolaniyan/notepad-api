@@ -94,6 +94,9 @@ jobs:
         run: docker compose up --build --detach --wait --wait-timeout 180
       - name: Smoke test through the gateway
         run: scripts/smoke-test.sh http://localhost:3000
+      # Not part of the compose stack: it's a stdio process an MCP client starts on demand
+      - name: Build the MCP server image
+        run: docker build --build-arg SERVICE=mcp-server --tag notepad/mcp-server .
       - name: Show service logs
         if: failure()
         run: docker compose logs --no-color
