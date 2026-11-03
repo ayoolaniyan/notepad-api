@@ -18,6 +18,7 @@ Each service owns its own database and is deployed independently. Services trust
 - [Project status](#project-status)
 - [Getting started](#getting-started)
 - [Services](#services)
+- [Using with AI agents](#using-with-ai-agents)
 - [API reference](#api-reference)
 - [Authentication design](#authentication-design)
 - [Available scripts](#available-scripts)
@@ -78,6 +79,8 @@ Each service owns its own database and is deployed independently. Services trust
 ```
 notepad-api/
 ├── README.md                        # This file; each package has its own README too
+├── AGENTS.md                        # Short guide for coding agents: layout, commands, conventions, rules
+├── llms.txt                         # Index of the docs for LLMs (llmstxt.org format)
 ├── package.json                     # Workspace root: workspaces + build/dev scripts
 ├── package-lock.json                # Single lockfile for all packages
 ├── tsconfig.base.json               # Compiler options every package extends
@@ -135,6 +138,10 @@ notepad-api/
     │   ├── .env.example
     │   ├── prisma.config.ts
     │   └── tsconfig.json
+    ├── mcp-server/                  # ✅ MCP server for AI agents (stdio, talks to the gateway over HTTP)
+    │   ├── src/                     # config, http client, auth manager, tool definitions, server
+    │   ├── test/                    # Fake gateway, real-stack launcher, integration tests
+    │   └── evals/                   # Deterministic tool-contract evals and optional agent evals
     └── notes-service/               # ✅ User-scoped notes CRUD
         ├── prisma/
         │   ├── schema.prisma        # Note model
@@ -352,11 +359,21 @@ Each package documents its own behaviour, configuration, scripts and tests:
 | api-gateway | `3000` (public) | [`services/api-gateway`](services/api-gateway/README.md) | Routing, request pipeline, rate limits, CORS, security headers, logging, health |
 | auth-service | `3001` (internal) | [`services/auth-service`](services/auth-service/README.md) | Token lifecycle, password hashing, account lockout, `users` and `refresh_tokens` schema |
 | notes-service | `3002` (internal) | [`services/notes-service`](services/notes-service/README.md) | Ownership checks, cursor pagination, search, `notes` schema |
+| mcp-server | — (stdio) | [`services/mcp-server`](services/mcp-server/README.md) | MCP tools for agents, token handling, error messages, evals |
 | `@notepad/shared` | — | [`shared`](shared/README.md) | Response helpers, errors, validation, health, `startServer`, JWT verification |
 
 The public HTTP contract is [`docs/openapi.yaml`](docs/openapi.yaml) (OpenAPI 3.1), checked in CI with `npm run docs:lint`. Load it into Swagger UI, Redocly or Postman to browse the API or generate a client.
 
 > **`JWT_ACCESS_SECRET` and `JWT_ISSUER` must be identical in auth-service and notes-service.** If they differ, every notes request returns `401`.
+
+---
+
+## Using with AI agents
+
+- **MCP server:** [`services/mcp-server`](services/mcp-server/README.md) exposes `list_notes`, `get_note`, `create_note`, `update_note` and `delete_note` to MCP clients such as Claude Desktop and Claude Code. It signs in as one account and only uses the public gateway. The README covers setup, the client config, error messages, limitations and the evals.
+- **Coding agents:** [`AGENTS.md`](AGENTS.md) has the layout, the verified commands, the API conventions and the rules for changing this repo.
+- **LLM-readable index:** [`llms.txt`](llms.txt) points to the OpenAPI spec, the MCP README and `AGENTS.md`.
+- **API contract:** [`docs/openapi.yaml`](docs/openapi.yaml).
 
 ---
 
@@ -739,10 +756,12 @@ Tests use **Jest** with **Supertest**, compiled by SWC (`npm run typecheck` chec
 | `notes-service` | Validation schemas | Nothing |
 | `auth-service:integration` | Register, login, lockout, refresh rotation and replay detection, logout, log out everywhere, expired-token cleanup, `/me` | PostgreSQL |
 | `notes-service:integration` | CRUD, ownership isolation, search, filters, cursor pagination | PostgreSQL |
+| `mcp-server` | MCP auth manager (single-flight refresh, retry once, fallback login), tool validation, error mapping, truncation | Nothing (in-memory fake gateway) |
+| `mcp-server:integration` | MCP tools end to end against the real gateway and services, started as child processes | PostgreSQL |
 
 Run one project with `npx jest --selectProjects <name>`, or one file with `npx jest <path>`.
 
-**Integration test database.** Integration tests connect to `TEST_POSTGRES_URL` (default `postgresql://postgres:postgres@localhost:5432`, which matches the plain `docker run` container from [Getting started](#1-start-postgresql)). Before each run, Jest creates `notepad_auth_test` and `notepad_notes_test` if needed, applies migrations and empties them. Development databases are never touched; the setup refuses any database name that doesn't end in `_test`.
+**Integration test database.** Integration tests connect to `TEST_POSTGRES_URL` (default `postgresql://postgres:postgres@localhost:5432`, which matches the plain `docker run` container from [Getting started](#1-start-postgresql)). Before each run, Jest creates `notepad_auth_test` and `notepad_notes_test` (and `notepad_mcp_auth_test` / `notepad_mcp_notes_test` for mcp-server) if needed, applies migrations and empties them. Development databases are never touched; the setup refuses any database name that doesn't end in `_test`.
 
 ```bash
 # The compose Postgres (docker compose up -d postgres), using POSTGRES_PASSWORD from .env
@@ -767,8 +786,8 @@ TEST_POSTGRES_URL=postgresql://user:pass@db-host:5432 npm run test:integration
 | Job | Steps |
 |---|---|
 | **Format, lint and typecheck** | `npm ci`, `npm run build` (shared and Prisma clients), `format:check`, `lint`, `typecheck`, `docs:lint` |
-| **Tests** | Every Jest project with coverage thresholds, against a PostgreSQL 17 service container. The coverage report is uploaded as the `coverage` artifact |
-| **Docker images and smoke test** | Builds every image, starts the compose stack (migrations included) and runs [`scripts/smoke-test.sh`](scripts/smoke-test.sh) through the gateway. Service logs are printed if anything fails |
+| **Tests** | Every Jest project with coverage thresholds, against a PostgreSQL 17 service container, then the deterministic MCP evals (`npm run evals -w mcp-server`). The coverage report is uploaded as the `coverage` artifact |
+| **Docker images and smoke test** | Builds every image, starts the compose stack (migrations included) and runs [`scripts/smoke-test.sh`](scripts/smoke-test.sh) through the gateway, then builds the mcp-server image. Service logs are printed if anything fails |
 
 Run the same smoke test locally against a running stack: `scripts/smoke-test.sh http://localhost:3000`.
 

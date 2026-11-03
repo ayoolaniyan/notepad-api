@@ -306,7 +306,7 @@ paths:
           schema: { type: string, maxLength: 500 }
         - name: q
           in: query
-          description: Case-insensitive search in title and content
+          description: Case-insensitive substring match on title or content (not full-text search)
           schema: { type: string, minLength: 1, maxLength: 200 }
         - name: pinned
           in: query
@@ -378,7 +378,7 @@ paths:
                   - $ref: "#/components/schemas/NoteResponse"
                   - properties:
                       message: { const: Note created }
-        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "400": { $ref: "#/components/responses/NoteValidationFailed" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "413": { $ref: "#/components/responses/PayloadTooLarge" }
         "429": { $ref: "#/components/responses/TooManyRequests" }
@@ -411,7 +411,10 @@ paths:
       tags: [Notes]
       operationId: updateNote
       summary: Update some or all fields of a note
-      description: Fields left out are unchanged. `updatedAt` is refreshed.
+      description: |
+        Fields left out are unchanged; `content` replaces the whole content. `updatedAt` is refreshed on
+        every call, so the note moves to the top of its group (pinned or unpinned) in `listNotes`, and
+        repeating the same request is not a no-op.
       security:
         - bearerAuth: []
       requestBody:
@@ -432,7 +435,7 @@ paths:
                   - $ref: "#/components/schemas/NoteResponse"
                   - properties:
                       message: { const: Note updated }
-        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "400": { $ref: "#/components/responses/NoteValidationFailed" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NoteNotFound" }
         "413": { $ref: "#/components/responses/PayloadTooLarge" }
@@ -443,6 +446,7 @@ paths:
       tags: [Notes]
       operationId: deleteNote
       summary: Delete a note
+      description: Permanent; there is no trash or undo. Deleting the same id again returns `404`.
       security:
         - bearerAuth: []
       responses:
@@ -514,6 +518,23 @@ components:
             errors:
               email: [Email must be a valid email address]
               password: [Password must be at least 8 characters long]
+    NoteValidationFailed:
+      description: Validation failed; `errors` lists the messages per field
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+          examples:
+            title:
+              value:
+                success: false
+                error: Validation failed
+                errors: { title: [Title must be at most 200 characters] }
+            emptyUpdate:
+              summary: PATCH with no known field
+              value:
+                success: false
+                error: Validation failed
+                errors: { body: ["Provide at least one of: title, content, isPinned"] }
     Unauthorized:
       description: Missing, malformed, invalid or expired access token
       content:
