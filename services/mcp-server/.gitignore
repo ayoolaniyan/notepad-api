@@ -1,0 +1,5 @@
+node_modules
+dist
+.env
+# Agent eval output (may contain model transcripts)
+evals/results/
