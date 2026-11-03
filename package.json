@@ -6,7 +6,7 @@
     "services/*"
   ],
   "scripts": {
-    "build": "npm run build -w @notepad/shared && npm run build -w auth-service -w notes-service -w api-gateway",
+    "build": "npm run build -w @notepad/shared && npm run build -w auth-service -w notes-service -w api-gateway -w mcp-server",
     "typecheck": "npm run build -w @notepad/shared && npm run typecheck --workspaces --if-present",
     "dev:auth": "npm run build -w @notepad/shared && concurrently -k -n shared,auth -c blue,green \"npm run dev -w @notepad/shared\" \"npm run dev -w auth-service\"",
     "dev:notes": "npm run build -w @notepad/shared && concurrently -k -n shared,notes -c blue,magenta \"npm run dev -w @notepad/shared\" \"npm run dev -w notes-service\"",
@@ -17,8 +17,8 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "jest",
-    "test:unit": "jest --selectProjects shared api-gateway auth-service notes-service",
-    "test:integration": "jest --selectProjects auth-service:integration notes-service:integration",
+    "test:unit": "jest --selectProjects shared api-gateway auth-service notes-service mcp-server",
+    "test:integration": "jest --selectProjects auth-service:integration notes-service:integration mcp-server:integration",
     "test:coverage": "jest --coverage",
     "docs:lint": "redocly lint docs/openapi.yaml"
   },

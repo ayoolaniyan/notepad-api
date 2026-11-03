@@ -15,11 +15,12 @@ COPY shared/package.json shared/
 COPY services/api-gateway/package.json services/api-gateway/
 COPY services/auth-service/package.json services/auth-service/
 COPY services/notes-service/package.json services/notes-service/
+COPY services/mcp-server/package.json services/mcp-server/
 
 # Full install, then compile shared and the service (database services also generate their Prisma client)
 FROM base AS build
 ARG SERVICE
-RUN test -n "$SERVICE" || (echo "Pass --build-arg SERVICE=<api-gateway|auth-service|notes-service>" && exit 1)
+RUN test -n "$SERVICE" || (echo "Pass --build-arg SERVICE=<api-gateway|auth-service|notes-service|mcp-server>" && exit 1)
 # Prisma's schema engine (used by the migrate target) needs OpenSSL. Install it before npm ci so
 # Prisma downloads the matching engine build. The runtime image doesn't need it: the pg driver
 # adapter is plain JavaScript.

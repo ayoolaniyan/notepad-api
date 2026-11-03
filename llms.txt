@@ -1,0 +1,17 @@
+# notepad-api
+
+> Note-taking backend in TypeScript: an API gateway in front of an auth service (JWT access tokens plus rotating refresh tokens) and a notes service, each with its own PostgreSQL database. It also ships an MCP server so AI agents can manage one user's notes.
+
+All public routes are served by the gateway under `/api/v1`. Responses use the envelope `{ success, data, message }` or `{ success: false, error, errors }`. Every notes request needs `Authorization: Bearer <accessToken>` and only sees the caller's own notes.
+
+## Docs
+
+- [OpenAPI spec](https://github.com/ayoolaniyan/notepad-api/blob/main/docs/openapi.yaml): The public HTTP contract (OpenAPI 3.1): every endpoint, request and response schema, limit and error response
+- [MCP server](https://github.com/ayoolaniyan/notepad-api/blob/main/services/mcp-server/README.md): Setup, client configuration, tool reference (list_notes, get_note, create_note, update_note, delete_note), error messages, auth behaviour, limitations and evals
+- [AGENTS.md](https://github.com/ayoolaniyan/notepad-api/blob/main/AGENTS.md): Guide for coding agents: repository layout, verified commands, API conventions and rules
+
+## Optional
+
+- [README](https://github.com/ayoolaniyan/notepad-api/blob/main/README.md): Full project documentation: architecture, setup, API reference, authentication design and trade-offs
+- [auth-service README](https://github.com/ayoolaniyan/notepad-api/blob/main/services/auth-service/README.md): Token lifecycle, password hashing and account lockout
+- [notes-service README](https://github.com/ayoolaniyan/notepad-api/blob/main/services/notes-service/README.md): Ownership checks, cursor pagination and search
