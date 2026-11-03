@@ -177,7 +177,7 @@ notepad-api/
 - Rotating refresh tokens, stored hashed in the database
 - Reuse detection: replaying a used refresh token revokes all of that user's sessions
 - Atomic rotation: concurrent refreshes with the same token cannot both succeed
-- Unknown-email and wrong-password logins take the same time and return the same message, so registered emails can't be discovered
+- Unknown-email and wrong-password logins take the same time and return the same message, so the login endpoint doesn't reveal which emails are registered (registration still does; see [Design trade-offs](#design-trade-offs-and-next-steps))
 - Email normalisation (trim and lowercase) and per-field validation errors
 - Per-account login lockout: 10 failed logins for one email in 15 minutes blocks that email from any IP, so credential stuffing spread across many IPs is stopped. Unknown emails lock out identically
 - Initial database migration
@@ -673,7 +673,7 @@ register / login
 |---|---|
 | **scrypt** (N=2¹⁵, r=8, p=3, 16-byte salt, 64-byte key) | Memory-hard hashing resists GPU cracking. Parameters are stored in each hash (`scrypt$N$r$p$salt$hash`), so they can be raised later without invalidating existing passwords |
 | **Constant-time comparison** (`timingSafeEqual`) | Prevents timing attacks on hash comparison |
-| **Dummy hash for unknown emails** | Unknown-email logins take as long as wrong-password logins, so attackers can't discover which emails are registered |
+| **Dummy hash for unknown emails** | Unknown-email logins take as long as wrong-password logins, so login can't be used to discover which emails are registered. Registration still can, because it returns `409` for a taken email (see trade-offs below) |
 | **Access tokens pinned to `HS256` and issuer** | Rejects `alg=none`, algorithm-confusion attacks and tokens from other issuers |
 | **Opaque refresh tokens** (32 random bytes) | Not decodable and carry no claims |
 | **Refresh tokens stored as SHA-256** | A database leak does not expose usable sessions |
@@ -810,6 +810,7 @@ Deliberate simplifications for a project of this size, why each is acceptable to
 |---|---|---|
 | HS256: every service that verifies tokens holds the signing secret, so notes-service could also mint them | Two services, deployed together and equally trusted. The gateway never holds the secret | RS256 or EdDSA: auth-service signs with a private key and publishes a JWKS; other services only get the public key |
 | Access tokens stay valid until they expire, even after logout or "log out of all devices" | Stateless verification needs no auth-service call per request, and the 15-minute lifetime bounds the exposure | A per-user "tokens issued before" timestamp, or a `jti` denylist, if immediate revocation is needed |
+| `POST /auth/register` returns `409` for a taken email, so registration reveals which emails have accounts | Registration logs the user in immediately and the project sends no email, so there is no neutral response that still works. The per-IP limit (5 registrations per hour) slows bulk probing | Email verification: always answer `202 Check your inbox`, and email the existing owner instead of creating a duplicate account |
 | Anyone who knows an email can trigger its lockout (10 failures, 15 minutes) | The intended trade against credential stuffing spread across many IPs. The lockout is temporary and never reveals whether the account exists | CAPTCHA after a few failures, or an emailed unlock link |
 
 **Data**
