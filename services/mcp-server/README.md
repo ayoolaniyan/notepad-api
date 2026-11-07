@@ -59,7 +59,45 @@ With Claude Code you can also run:
 ```bash
 claude mcp add notepad -e NOTEPAD_EMAIL=you@example.com -e NOTEPAD_PASSWORD='<YOUR_PASSWORD>' \
   -- node /absolute/path/to/notepad-api/services/mcp-server/dist/index.js
+claude mcp list   # notepad: node .../dist/index.js - ✔ Connected
 ```
+
+Put the server name before the `-e` flags (`-e` accepts several values and would take the name as one). The default `local` scope stores the entry, password included, in `~/.claude.json` rather than in the project. The stored entry has the same `command` / `args` / `env` shape as the JSON above.
+
+Tested on 2026-11-07 with Claude Code 2.1.318 against the Docker Compose stack: this `claude mcp add` command (plus `-e NOTEPAD_API_URL=...` for a non-default port) and the transcript below. The Claude Desktop config file has not been tested.
+
+### Example: a real agent session
+
+A throwaway account was seeded with six notes: three about invoices (one only mentions "invoice" in its content), one already pinned, and two unrelated. Claude Code (`claude-opus-5-5`) was then run headless with only the read and update tools allowed:
+
+```bash
+claude -p "Find my notes about invoices and pin them." \
+  --allowedTools "mcp__notepad__list_notes,mcp__notepad__get_note,mcp__notepad__update_note"
+```
+
+Transcript, trimmed (ids shortened, tool results reduced to the fields that matter):
+
+```text
+> Find my notes about invoices and pin them.
+
+tool  list_notes   {"query": "invoice", "limit": 100}
+      → 3 notes: "Q4 billing", "Chase unpaid invoices", "Invoice 1042 - Acme Corp" (all isPinned: false)
+tool  update_note  {"id": "eb5462b2-…", "isPinned": true}   → "Invoice 1042 - Acme Corp", isPinned: true
+tool  update_note  {"id": "501aa029-…", "isPinned": true}   → "Chase unpaid invoices", isPinned: true
+tool  update_note  {"id": "8ba09aac-…", "isPinned": true}   → "Q4 billing", isPinned: true
+
+I searched your notes for "invoice", found three, and pinned all of them:
+
+1. **Invoice 1042 - Acme Corp**: "Sent on 3 Nov. Net 30. Follow up if unpaid by 3 Dec."
+2. **Chase unpaid invoices**: "Globex and Initech are both overdue."
+3. **Q4 billing**: "Remember to send the December invoice to Hooli before the 15th."
+
+The search matched the word "invoice" in titles and content. A note that only says something like
+"billing" or "payment" without that word wouldn't have come up, so let me know if you want me to
+search for other terms too.
+```
+
+The run took 4 tool calls, no tool errors and 6 turns. Afterwards the REST API showed exactly the three invoice notes newly pinned, the previously pinned note still pinned, and the other two unchanged. This is one run of one task. It shows the server works with a real client; it is not a success rate (see [Tests and evals](#tests-and-evals)).
 
 ### Docker
 
