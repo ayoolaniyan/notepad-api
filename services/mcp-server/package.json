@@ -17,9 +17,9 @@
     "evals:agent": "tsx evals/agent.ts"
   },
   "devDependencies": {
-    "@anthropic-ai/sdk": "^1.4.0",
+    "@anthropic-ai/sdk": "^1.8.0",
     "@types/jsonwebtoken": "^9.0.10",
-    "@types/node": "^26.6.5",
+    "@types/node": "^26.6.6",
     "@types/pg": "^8.23.1",
     "jsonwebtoken": "^9.0.3",
     "pg": "^8.23.1",
